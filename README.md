@@ -44,7 +44,7 @@ Filter attorney searches by:
 
 ### Performance
 
-- **Multiple Extraction Methods** - JSON-LD schema, internal APIs, and HTML parsing with automatic fallback
+- **Multiple Extraction Methods** - API-first HTTP, embedded JSON/JSON-LD, HTML parsing, and optional browser fallback
 - **Cloudflare Bypass** - Built-in evasion using Camoufox browser technology
 - **Concurrent Processing** - Fast parallel scraping with configurable concurrency
 - **Smart Deduplication** - Automatic duplicate removal across pages
@@ -58,9 +58,9 @@ Filter attorney searches by:
 
 ```json
 {
-  "startUrl": "https://www.avvo.com/bankruptcy-debt-lawyer/al.html",
-  "practiceArea": "bankruptcy-debt",
-  "state": "al",
+  "startUrls": [
+    { "url": "https://www.avvo.com/bankruptcy-debt-lawyer/al.html" }
+  ],
   "city": "birmingham",
   "maxLawyers": 50,
   "includeReviews": true,
@@ -96,6 +96,13 @@ Filter attorney searches by:
 <tbody>
 
 <tr>
+<td><code>startUrls</code></td>
+<td>Array</td>
+<td>? No</td>
+<td>List of Avvo directory URLs to scrape. If provided, practiceArea/state are ignored.</td>
+</tr>
+
+<tr>
 <td><code>startUrl</code></td>
 <td>String</td>
 <td>❌ No</td>
@@ -128,8 +135,7 @@ Filter attorney searches by:
 <td>Integer</td>
 <td>❌ No</td>
 <td>Maximum number of profiles to scrape (default: 50, 0 = unlimited)</td>
-</tr>
-
+</tr>
 <tr>
 <td><code>includeReviews</code></td>
 <td>Boolean</td>
@@ -142,6 +148,12 @@ Filter attorney searches by:
 <td>Boolean</td>
 <td>❌ No</td>
 <td>Fetch additional contact details from profile pages (default: true)</td>
+</tr>
+<tr>
+<td><code>debugHtml</code></td>
+<td>Boolean</td>
+<td>? No</td>
+<td>Save debug HTML when extraction fails or blocks occur (default: false)</td>
 </tr>
 
 <tr>
@@ -177,9 +189,10 @@ Each lawyer profile includes:
   "bio": "Experienced bankruptcy attorney serving Birmingham and surrounding areas...",
   "education": ["Harvard Law School, J.D., 2008", "Yale University, B.A., 2005"],
   "awards": ["Super Lawyers Rising Star 2022", "Avvo Client's Choice 2023"],
+  "reviews": [],
   "scrapedAt": "2026-01-02T10:30:00.000Z"
 }
-```
+``` 
 
 ### Field Descriptions
 
@@ -200,6 +213,7 @@ Each lawyer profile includes:
 | `bio` | String | Professional biography |
 | `education` | Array | Law school and undergraduate education |
 | `awards` | Array | Professional recognition and awards |
+| `reviews` | Array | Review objects or snippets when available |
 | `scrapedAt` | String | ISO timestamp of data extraction |
 
 ---
@@ -245,41 +259,45 @@ Track attorney ratings, review trends, and service offerings to inform marketing
 
 ### Multi-Strategy Extraction
 
-The scraper employs three extraction methods with automatic fallback:
+The scraper employs an API-first HTTP pipeline with layered fallbacks:
 
-#### 1. JSON-LD Schema (Primary Method)
+#### 1. JSON API (Primary Method)
 
-Extracts structured data from JSON-LD schema markup embedded in pages. This method provides the most reliable and complete data when available.
-
-**Advantages:**
-- Structured, validated data format
-- Fast extraction without complex parsing
-- High reliability and accuracy
-- Minimal maintenance required
-
-#### 2. Internal API Detection (Secondary Method)
-
-Monitors network requests and embedded scripts to identify internal JSON APIs used by Avvo's frontend. When detected, data is extracted directly from API responses.
+Direct HTTP calls to internal JSON endpoints when available (user-supplied or discovered). Fastest and most reliable when present.
 
 **Advantages:**
-- 10-50x faster than HTML parsing
-- Complete, structured data
-- Handles dynamic content loading
-- Bypasses client-side rendering delays
+- Structured JSON output
+- No rendering overhead
+- High accuracy and speed
+
+#### 2. Embedded JSON + JSON-LD (Secondary Method)
+
+Parses embedded JSON blobs (e.g., `__NEXT_DATA__`, inline JSON) and JSON-LD markup from HTML.
+
+**Advantages:**
+- Structured data without browsers
+- Resilient to minor markup changes
 
 #### 3. HTML Parsing with Cheerio (Fallback Method)
 
-Uses intelligent CSS selectors with multiple fallback patterns to extract data from rendered HTML. Ensures compatibility even when other methods fail.
+Uses selector-based parsing on HTTP-fetched HTML when JSON is not available.
 
 **Advantages:**
 - Works on any page structure
-- Handles non-standard markup
 - Multiple selector strategies
 - Robust against site changes
 
+#### 4. Browser Fallback (Last Resort)
+
+Playwright + Camoufox is used only when HTTP extraction fails or is blocked.
+
+**Advantages:**
+- Handles dynamic or protected pages
+- Bypasses heavy client rendering when needed
+
 ### Cloudflare Bypass Technology
 
-**Camoufox** - Advanced Firefox-based browser with built-in anti-detection capabilities:
+**Camoufox** is used only in browser fallback mode to bypass Cloudflare or heavy JS pages:
 
 - **Randomized Fingerprinting** - Dynamic OS, screen resolution, and timezone randomization
 - **GeoIP Matching** - Automatic locale and location synchronization with proxy IP
@@ -293,10 +311,10 @@ Uses intelligent CSS selectors with multiple fallback patterns to extract data f
 
 | Optimization | Impact | Implementation |
 |--------------|--------|----------------|
-| Schema Extraction | 50x faster | JSON-LD parsing |
-| API Detection | 10-25x faster | Network monitoring |
+| API-First HTTP | 10-50x faster | Direct JSON endpoint calls |
+| Embedded JSON/JSON-LD | 5-20x faster | HTML JSON parsing |
 | Concurrent Requests | 3-5x faster | Parallel processing |
-| Smart Caching | Reduced load | Context reuse |
+| Browser Fallback Only When Needed | Lower cost | Optional Playwright pass |
 | Profile Enrichment | Detailed data | Batch HTTP requests |
 
 ### Quality Assurance
@@ -458,6 +476,8 @@ This scraper extracts publicly available attorney information from Avvo's direct
 - Verify practice area slug matches Avvo's URL format
 - Use Apify residential proxies for better reliability
 - Try different practice areas or locations
+- Enable `useBrowserFallback` if HTTP extraction is blocked
+- Enable `debugHtml` to inspect blocked pages
 - Check Actor logs for specific error messages
 
 ### Incomplete Data
@@ -553,3 +573,8 @@ avvo scraper, lawyer scraper, attorney directory, legal data extraction, lawyer 
 ---
 
 **Built for the Apify community** | [Get Started Now](https://console.apify.com) | [Documentation](https://docs.apify.com) | [Join Discord](https://discord.com/invite/jyEM2PRvMU)
+
+
+
+
+

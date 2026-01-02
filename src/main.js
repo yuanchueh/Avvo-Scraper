@@ -1,389 +1,371 @@
 import { Actor, log } from 'apify';
-import { PlaywrightCrawler } from 'crawlee';
+import { CheerioCrawler, PlaywrightCrawler, RequestQueue } from 'crawlee';
 import { launchOptions as camoufoxLaunchOptions } from 'camoufox-js';
 import { firefox } from 'playwright';
 import * as cheerio from 'cheerio';
 import { gotScraping } from 'got-scraping';
 
-// Initialize the Apify SDK
 await Actor.init();
 
-/**
- * Extract lawyers from JSON-LD structured data (Primary method)
- * Avvo may use Attorney or LegalService schema markup
- */
-async function extractLawyersViaJsonLD(page) {
-    log.info('Attempting to extract lawyers via JSON-LD');
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+];
 
+const DEFAULT_HEADERS = {
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+};
+
+const LABELS = {
+    LISTING: 'LISTING',
+    API: 'API',
+    PROFILE: 'PROFILE',
+    SITEMAP: 'SITEMAP',
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function randomBetween(min, max) {
+    if (max <= min) return min;
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function normalizeText(value) {
+    if (!value) return '';
+    return String(value).replace(/\s+/g, ' ').trim();
+}
+
+function normalizeUrl(value, baseUrl) {
+    if (!value) return '';
     try {
-        const jsonLdScripts = await page.$$eval('script[type="application/ld+json"]', scripts =>
-            scripts.map(script => script.textContent)
-        );
-
-        const lawyers = [];
-
-        for (const scriptContent of jsonLdScripts) {
-            try {
-                const data = JSON.parse(scriptContent);
-
-                // Handle array of attorney listings
-                if (Array.isArray(data)) {
-                    for (const item of data) {
-                        if (item['@type'] === 'Attorney' || item['@type'] === 'Person' || item['@type'] === 'LegalService') {
-                            lawyers.push(parseAttorneySchema(item));
-                        }
-                    }
-                }
-                // Handle single attorney
-                else if (data['@type'] === 'Attorney' || data['@type'] === 'Person' || data['@type'] === 'LegalService') {
-                    lawyers.push(parseAttorneySchema(data));
-                }
-                // Handle @graph structure
-                else if (data['@graph']) {
-                    for (const item of data['@graph']) {
-                        if (item['@type'] === 'Attorney' || item['@type'] === 'Person' || item['@type'] === 'LegalService') {
-                            lawyers.push(parseAttorneySchema(item));
-                        }
-                    }
-                }
-                // Handle ItemList with attorneys
-                else if (data['@type'] === 'ItemList' && data.itemListElement) {
-                    for (const listItem of data.itemListElement) {
-                        const item = listItem.item || listItem;
-                        if (item['@type'] === 'Attorney' || item['@type'] === 'Person' || item['@type'] === 'LegalService') {
-                            lawyers.push(parseAttorneySchema(item));
-                        }
-                    }
-                }
-            } catch (parseErr) {
-                log.debug(`Failed to parse JSON-LD: ${parseErr.message}`);
-            }
-        }
-
-        if (lawyers.length > 0) {
-            log.info(`Extracted ${lawyers.length} lawyers via JSON-LD`);
-        }
-
-        return lawyers;
-    } catch (error) {
-        log.warning(`JSON-LD extraction failed: ${error.message}`);
-        return [];
+        return new URL(value, baseUrl).href;
+    } catch {
+        return value;
     }
 }
 
-/**
- * Parse Attorney schema to our format
- */
-function parseAttorneySchema(attorneyData) {
-    const address = attorneyData.address || {};
-    
-    let location = '';
-    if (typeof address === 'string') {
-        location = address;
-    } else {
-        location = [
-            address.addressLocality,
-            address.addressRegion,
-            address.postalCode
-        ].filter(Boolean).join(', ');
+function normalizeArray(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return value.filter(Boolean);
+    if (typeof value === 'string') {
+        return value.split(',').map((item) => normalizeText(item)).filter(Boolean);
+    }
+    return [value];
+}
+
+function toNumber(value) {
+    if (value === null || value === undefined) return null;
+    const num = typeof value === 'number' ? value : Number(String(value).replace(/[^\d.]/g, ''));
+    return Number.isFinite(num) ? num : null;
+}
+
+function toInt(value) {
+    if (value === null || value === undefined) return 0;
+    const num = parseInt(String(value).replace(/[^\d]/g, ''), 10);
+    return Number.isFinite(num) ? num : 0;
+}
+
+function pickFirst(...values) {
+    for (const value of values) {
+        if (value !== null && value !== undefined && value !== '') return value;
+    }
+    return null;
+}
+
+function isBlockedHtml(html) {
+    const snippet = html.slice(0, 5000);
+    return snippet.includes('Just a moment') ||
+        snippet.includes('cf-browser-verification') ||
+        snippet.includes('Checking your browser') ||
+        snippet.includes('Cloudflare');
+}
+
+function extractJsonLdObjects(html) {
+    const $ = cheerio.load(html);
+    const scripts = $('script[type="application/ld+json"]');
+    const parsed = [];
+
+    scripts.each((_, el) => {
+        const text = $(el).contents().text();
+        if (!text) return;
+        try {
+            const data = JSON.parse(text);
+            parsed.push(data);
+        } catch (err) {
+            log.debug(`Failed to parse JSON-LD script: ${err.message}`);
+        }
+    });
+
+    return parsed;
+}
+
+function extractEmbeddedJson(html) {
+    const $ = cheerio.load(html);
+    const extracted = [];
+
+    const nextData = $('#__NEXT_DATA__').text();
+    if (nextData) {
+        try {
+            extracted.push(JSON.parse(nextData));
+        } catch (err) {
+            log.debug(`Failed to parse __NEXT_DATA__: ${err.message}`);
+        }
     }
 
-    const practiceAreas = Array.isArray(attorneyData.knowsAbout) 
-        ? attorneyData.knowsAbout 
-        : (attorneyData.areaServed ? [attorneyData.areaServed] : []);
+    const jsonScripts = $('script[type="application/json"]');
+    jsonScripts.each((_, el) => {
+        const text = $(el).contents().text();
+        if (!text || text.length < 30) return;
+        try {
+            extracted.push(JSON.parse(text));
+        } catch {
+            // Skip non-JSON blobs
+        }
+    });
+
+    const inlineScripts = $('script:not([src])').toArray();
+    inlineScripts.forEach((script) => {
+        const content = $(script).text();
+        if (!content) return;
+        const apolloMatch = content.match(/__APOLLO_STATE__\s*=\s*({[\s\S]*?})\s*;?\s*$/m);
+        if (apolloMatch) {
+            try {
+                extracted.push(JSON.parse(apolloMatch[1]));
+            } catch {
+                // Ignore non-JSON Apollo state
+            }
+        }
+        const stateMatch = content.match(/__INITIAL_STATE__\s*=\s*({[\s\S]*?})\s*;?\s*$/m);
+        if (stateMatch) {
+            try {
+                extracted.push(JSON.parse(stateMatch[1]));
+            } catch {
+                // Ignore non-JSON initial state
+            }
+        }
+    });
+
+    return extracted;
+}
+
+function collectLawyerCandidates(source, candidates = [], depth = 0) {
+    if (!source || depth > 7) return candidates;
+    if (Array.isArray(source)) {
+        for (const item of source) {
+            if (item && typeof item === 'object' && isLawyerCandidate(item)) {
+                candidates.push(item);
+            } else {
+                collectLawyerCandidates(item, candidates, depth + 1);
+            }
+        }
+        return candidates;
+    }
+
+    if (typeof source === 'object') {
+        for (const value of Object.values(source)) {
+            collectLawyerCandidates(value, candidates, depth + 1);
+        }
+    }
+    return candidates;
+}
+
+function isLawyerCandidate(item) {
+    const hasName = Boolean(item.name || item.fullName || item.displayName || item.title);
+    const hasProfile = Boolean(item.profileUrl || item.profile_url || item.url || item.link);
+    const hasHints = Boolean(item.practiceAreas || item.specialties || item.avvoRating || item.rating || item.location);
+    return hasName && (hasProfile || hasHints);
+}
+
+function normalizeLawyer(raw, baseUrl) {
+    if (!raw || typeof raw !== 'object') return null;
+
+    const name = normalizeText(pickFirst(raw.name, raw.fullName, raw.displayName, raw.title));
+    const profileUrl = normalizeUrl(pickFirst(raw.profileUrl, raw.profile_url, raw.url, raw.link), baseUrl);
+    const address = raw.address || {};
+
+    let location = '';
+    if (typeof address === 'string') {
+        location = normalizeText(address);
+    } else if (address && typeof address === 'object') {
+        location = normalizeText(
+            [address.addressLocality, address.addressRegion, address.postalCode].filter(Boolean).join(', ')
+        );
+    } else {
+        location = normalizeText(pickFirst(raw.location, raw.city, raw.region));
+    }
+
+    const practiceAreas = normalizeArray(
+        pickFirst(raw.practiceAreas, raw.specialties, raw.practiceArea, raw.tags, raw.knowsAbout, raw.areaServed)
+    ).map(normalizeText).filter(Boolean);
 
     return {
-        name: attorneyData.name || '',
-        rating: attorneyData.aggregateRating?.ratingValue || null,
-        reviewCount: attorneyData.aggregateRating?.reviewCount || 0,
+        name: name || 'Unknown',
+        rating: toNumber(pickFirst(raw.rating, raw.avvoRating, raw.aggregateRating?.ratingValue)),
+        reviewCount: toInt(pickFirst(raw.reviewCount, raw.reviews?.length, raw.aggregateRating?.reviewCount)),
         practiceAreas,
         location,
-        phone: attorneyData.telephone || '',
-        email: attorneyData.email || '',
-        website: attorneyData.url || '',
-        yearsLicensed: null,
-        barAdmissions: [],
-        languages: [],
-        profileUrl: attorneyData.url || '',
-        bio: attorneyData.description || '',
-        scrapedAt: new Date().toISOString()
+        phone: normalizeText(pickFirst(raw.phone, raw.phoneNumber, raw.telephone)),
+        email: normalizeText(raw.email),
+        website: normalizeUrl(pickFirst(raw.website, raw.websiteUrl), baseUrl),
+        yearsLicensed: toInt(pickFirst(raw.yearsLicensed, raw.yearAdmitted)),
+        barAdmissions: normalizeArray(raw.barAdmissions).map(normalizeText).filter(Boolean),
+        languages: normalizeArray(raw.languages).map(normalizeText).filter(Boolean),
+        profileUrl,
+        bio: normalizeText(pickFirst(raw.bio, raw.description)),
+        education: normalizeArray(raw.education).map(normalizeText).filter(Boolean),
+        awards: normalizeArray(raw.awards).map(normalizeText).filter(Boolean),
+        reviews: normalizeArray(raw.reviews),
+        scrapedAt: new Date().toISOString(),
     };
 }
 
-/**
- * Fetch lawyer profile details from profile page using got-scraping
- * This is faster than using Playwright for each detail page
- */
-async function fetchLawyerProfile(profileUrl, cookies = '', userAgent = '') {
-    try {
-        const response = await gotScraping({
-            url: profileUrl,
-            headers: {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Cookie': cookies,
-                'User-Agent': userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'same-origin',
-            },
-            timeout: { request: 15000 },
-            retry: { limit: 1 },
-        });
+function extractLawyersFromJsonLd(html, baseUrl) {
+    const jsonObjects = extractJsonLdObjects(html);
+    const lawyers = [];
 
-        if (response.statusCode === 403 || response.statusCode === 503) {
-            log.debug(`Cloudflare block detected on profile page (${response.statusCode}): ${profileUrl}`);
-            return { blocked: true };
+    for (const data of jsonObjects) {
+        if (Array.isArray(data)) {
+            data.forEach((item) => addJsonLdLawyer(item, lawyers, baseUrl));
+        } else {
+            addJsonLdLawyer(data, lawyers, baseUrl);
         }
+    }
 
-        if (response.statusCode !== 200) {
-            log.debug(`Profile page returned status ${response.statusCode}: ${profileUrl}`);
-            return null;
-        }
+    return lawyers;
+}
 
-        const $ = cheerio.load(response.body);
-
-        const title = $('title').text();
-        if (title.includes('Just a moment') || title.includes('Cloudflare')) {
-            log.debug(`Cloudflare challenge page detected: ${profileUrl}`);
-            return { blocked: true };
-        }
-
-        // Extract additional profile details
-        const additionalInfo = {
-            bio: $('[data-testid="bio"], .lawyer-bio, .bio-text, .profile-bio').first().text().trim() || '',
-            education: [],
-            awards: []
-        };
-
-        // Extract education
-        $('[data-testid="education"] li, .education-item, .school-item, [class*="education"] li').each((_, el) => {
-            const education = $(el).text().trim();
-            if (education) additionalInfo.education.push(education);
-        });
-
-        // Extract awards
-        $('[data-testid="awards"] li, .award-item, [class*="award"] li').each((_, el) => {
-            const award = $(el).text().trim();
-            if (award) additionalInfo.awards.push(award);
-        });
-
-        return additionalInfo;
-
-    } catch (error) {
-        if (error.message && (error.message.includes('403') || error.message.includes('503'))) {
-            log.debug(`Cloudflare block detected (error): ${profileUrl}`);
-            return { blocked: true };
-        }
-        log.debug(`Failed to fetch profile page ${profileUrl}: ${error.message}`);
-        return null;
+function addJsonLdLawyer(data, lawyers, baseUrl) {
+    if (!data) return;
+    if (data['@graph']) {
+        data['@graph'].forEach((item) => addJsonLdLawyer(item, lawyers, baseUrl));
+        return;
+    }
+    if (data['@type'] === 'ItemList' && data.itemListElement) {
+        data.itemListElement.forEach((item) => addJsonLdLawyer(item.item || item, lawyers, baseUrl));
+        return;
+    }
+    const type = data['@type'];
+    if (type === 'Attorney' || type === 'Person' || type === 'LegalService') {
+        const normalized = normalizeLawyer(data, baseUrl);
+        if (normalized) lawyers.push(normalized);
     }
 }
 
-/**
- * Enrich lawyers with full profile data from detail pages
- */
-async function enrichLawyersWithProfiles(lawyers, page, maxConcurrency = 10) {
-    if (lawyers.length === 0) return lawyers;
+function extractApiUrlsFromHtml(html, baseUrl) {
+    const candidates = new Set();
+    const absoluteRegex = /https?:\/\/[^\s"'\\]+\/api\/[^\s"'\\]+/g;
+    const relativeRegex = /['"]((?:\/api\/|\/graphql)[^'"\s]+)['"]/g;
 
-    log.info(`Fetching full profiles for ${lawyers.length} lawyers...`);
-
-    const cookies = await page.context().cookies();
-    const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-    const userAgent = await page.evaluate(() => navigator.userAgent);
-
-    log.debug(`Using ${cookies.length} cookies from Camoufox session for profile pages`);
-
-    const enrichedLawyers = [];
-    const batchSize = maxConcurrency;
-    let blockedCount = 0;
-
-    for (let i = 0; i < lawyers.length; i += batchSize) {
-        const batch = lawyers.slice(i, i + batchSize);
-
-        const batchPromises = batch.map(async (lawyer) => {
-            if (!lawyer.profileUrl) return lawyer;
-
-            const profileData = await fetchLawyerProfile(lawyer.profileUrl, cookieString, userAgent);
-
-            if (profileData && profileData.blocked) {
-                blockedCount++;
-                log.warning(`Profile page blocked by Cloudflare: ${lawyer.profileUrl}`);
-                return lawyer;
-            }
-
-            if (profileData) {
-                return {
-                    ...lawyer,
-                    bio: profileData.bio || lawyer.bio,
-                    education: profileData.education || [],
-                    awards: profileData.awards || []
-                };
-            }
-
-            return lawyer;
-        });
-
-        const batchResults = await Promise.all(batchPromises);
-        enrichedLawyers.push(...batchResults);
-
-        log.info(`Enriched ${Math.min(i + batchSize, lawyers.length)}/${lawyers.length} lawyers with full profiles`);
-
-        if (i + batchSize < lawyers.length) {
-            await new Promise(resolve => setTimeout(resolve, 200));
-        }
+    let match;
+    while ((match = absoluteRegex.exec(html)) !== null) {
+        candidates.add(match[0]);
+    }
+    while ((match = relativeRegex.exec(html)) !== null) {
+        candidates.add(normalizeUrl(match[1], baseUrl));
     }
 
-    if (blockedCount > 0) {
-        log.warning(`${blockedCount} profile pages were blocked by Cloudflare - using basic info instead`);
-    }
-
-    return enrichedLawyers;
+    return [...candidates];
 }
 
-/**
- * Extract API endpoint calls from page network requests
- * Monitor XHR/Fetch requests to find internal API
- */
-async function extractLawyersViaAPI(page) {
-    log.info('Attempting to extract lawyers via internal API');
+function extractNextPageUrlFromHtml($, baseUrl) {
+    const nextHref = $('a[rel="next"], link[rel="next"]').attr('href');
+    if (nextHref) return normalizeUrl(nextHref, baseUrl);
 
-    const capturedLawyers = [];
+    const nextButton = $('a[class*="next"], .pagination a').filter((_, el) => {
+        const text = normalizeText($(el).text()).toLowerCase();
+        return text === 'next' || text === 'next page';
+    }).first();
 
-    try {
-        const responses = await page.evaluate(async () => {
-            const scripts = document.querySelectorAll('script:not([src])');
-            const potentialData = [];
+    const href = nextButton.attr('href');
+    return href ? normalizeUrl(href, baseUrl) : '';
+}
 
-            scripts.forEach(script => {
-                const content = script.textContent || '';
-                if (content.includes('"lawyers"') || content.includes('"attorneys"') ||
-                    content.includes('"profiles"') || content.includes('lawyerData')) {
-                    potentialData.push(content);
-                }
+function extractNextPageUrlFromApi(json, baseUrl) {
+    if (!json || typeof json !== 'object') return '';
+    const candidate = pickFirst(
+        json.nextPageUrl,
+        json.next,
+        json.links?.next,
+        json.pagination?.next,
+        json.paging?.next
+    );
+    return candidate ? normalizeUrl(candidate, baseUrl) : '';
+}
+
+async function fetchJsonWithRetries(url, { proxyUrl, headers, maxRetries = 3 }) {
+    let attempt = 0;
+    while (attempt <= maxRetries) {
+        try {
+            const response = await gotScraping({
+                url,
+                headers,
+                proxyUrl,
+                timeout: { request: 20000 },
+                retry: { limit: 0 },
+                throwHttpErrors: false,
             });
 
-            return potentialData;
-        });
-
-        for (const content of responses) {
-            try {
-                const jsonMatch = content.match(/\{[\s\S]*\}/);
-                if (jsonMatch) {
-                    const data = JSON.parse(jsonMatch[0]);
-                    const lawyerArray = data.lawyers || data.attorneys || data.profiles ||
-                        data.data?.lawyers || data.data?.attorneys || [];
-
-                    if (Array.isArray(lawyerArray) && lawyerArray.length > 0) {
-                        log.info(`Found ${lawyerArray.length} lawyers in embedded API data`);
-                        for (const lawyer of lawyerArray) {
-                            capturedLawyers.push({
-                                name: lawyer.name || lawyer.fullName || '',
-                                rating: lawyer.rating || lawyer.avvoRating || null,
-                                reviewCount: lawyer.reviewCount || lawyer.reviews?.length || 0,
-                                practiceAreas: lawyer.practiceAreas || lawyer.specialties || [],
-                                location: lawyer.location || lawyer.city || '',
-                                phone: lawyer.phone || lawyer.phoneNumber || '',
-                                email: lawyer.email || '',
-                                website: lawyer.website || lawyer.websiteUrl || '',
-                                yearsLicensed: lawyer.yearsLicensed || lawyer.yearAdmitted || null,
-                                barAdmissions: lawyer.barAdmissions || [],
-                                languages: lawyer.languages || [],
-                                profileUrl: lawyer.profileUrl || lawyer.url || '',
-                                bio: lawyer.bio || lawyer.description || '',
-                                scrapedAt: new Date().toISOString()
-                            });
-                        }
-                    }
-                }
-            } catch (parseErr) {
-                // Continue to next script
+            if ([403, 429, 503].includes(response.statusCode)) {
+                throw new Error(`Blocked with status ${response.statusCode}`);
             }
+            if (response.statusCode < 200 || response.statusCode >= 300) {
+                throw new Error(`Unexpected status ${response.statusCode}`);
+            }
+
+            const bodyText = typeof response.body === 'string' ? response.body : response.body.toString('utf-8');
+            return JSON.parse(bodyText);
+        } catch (err) {
+            if (attempt === maxRetries) throw err;
+            const backoff = Math.min(500 * 2 ** attempt, 5000);
+            await sleep(backoff + randomBetween(0, 250));
+            attempt += 1;
         }
+    }
+    return null;
+}
 
-        return capturedLawyers;
+function extractLawyersFromApiJson(json, baseUrl) {
+    const candidates = collectLawyerCandidates(json);
+    const lawyers = candidates.map((item) => normalizeLawyer(item, baseUrl)).filter(Boolean);
+    return lawyers;
+}
 
-    } catch (error) {
-        log.warning(`Failed to capture API data: ${error.message}`);
+function extractLawyerDataViaHtml($, baseUrl) {
+    const selectors = [
+        'div[data-testid="lawyer-card"]',
+        '.lawyer-card',
+        '[class*="lawyer"][class*="card"]',
+        'article[data-lawyer-id]',
+        '.search-result-lawyer',
+        '.profile-card',
+        '[data-lawyer-name]',
+    ];
+
+    let lawyerElements = $([]);
+    for (const selector of selectors) {
+        const elements = $(selector);
+        if (elements.length > 0) {
+            log.info(`Found ${elements.length} lawyer cards with selector: ${selector}`);
+            lawyerElements = elements;
+            break;
+        }
+    }
+
+    if (lawyerElements.length === 0) {
         return [];
     }
+
+    const lawyers = [];
+    lawyerElements.each((_, element) => {
+        const lawyer = extractLawyerFromElement($, $(element), baseUrl);
+        if (lawyer) lawyers.push(lawyer);
+    });
+    return lawyers;
 }
 
-/**
- * Build Avvo search URL from input parameters
- */
-function buildSearchUrl(input) {
-    if (input.startUrl && input.startUrl.trim()) {
-        log.info('Using provided start URL directly');
-        return input.startUrl.trim();
-    }
-
-    const practiceArea = input.practiceArea || 'bankruptcy-debt';
-    const state = input.state || 'al';
-    const city = input.city ? `${input.city.toLowerCase()}-` : '';
-
-    const baseUrl = `https://www.avvo.com/${practiceArea}-lawyer/${city}${state}.html`;
-
-    log.info(`Built search URL: ${baseUrl}`);
-    return baseUrl;
-}
-
-/**
- * Extract lawyer data from the page using Cheerio HTML parsing
- */
-async function extractLawyerDataViaHTML(page) {
-    log.info('Extracting lawyer data via HTML parsing with Cheerio');
-
-    try {
-        const html = await page.content();
-        const $ = cheerio.load(html);
-        const lawyers = [];
-
-        // Try multiple selector strategies for Avvo's lawyer cards
-        const selectors = [
-            'div[data-testid="lawyer-card"]',
-            '.lawyer-card',
-            '[class*="lawyer"][class*="card"]',
-            'article[data-lawyer-id]',
-            '.search-result-lawyer',
-            '.profile-card',
-            '[data-lawyer-name]'
-        ];
-
-        let lawyerElements = $([]);
-
-        for (const selector of selectors) {
-            const elements = $(selector);
-            if (elements.length > 0) {
-                log.info(`Found ${elements.length} lawyer cards with selector: ${selector}`);
-                lawyerElements = elements;
-                break;
-            }
-        }
-
-        if (lawyerElements.length === 0) {
-            log.warning('No lawyer cards found with standard selectors, trying fallback approach');
-            return [];
-        }
-
-        lawyerElements.each((_, element) => {
-            const lawyer = extractLawyerFromElement($, $(element));
-            if (lawyer) lawyers.push(lawyer);
-        });
-
-        log.info(`Extracted ${lawyers.length} lawyers via HTML parsing`);
-        return lawyers;
-
-    } catch (error) {
-        log.warning(`HTML parsing failed: ${error.message}`);
-        return [];
-    }
-}
-
-/**
- * Extract lawyer data from a single lawyer element
- */
-function extractLawyerFromElement($, $el) {
+function extractLawyerFromElement($, $el, baseUrl) {
     try {
         const nameSelectors = [
             '[data-testid="lawyer-name"]',
@@ -391,7 +373,7 @@ function extractLawyerFromElement($, $el) {
             'h3 a',
             '.lawyer-name',
             '.profile-name',
-            'a[href*="/attorney/"]'
+            'a[href*="/attorney/"]',
         ];
 
         let name = '';
@@ -399,12 +381,9 @@ function extractLawyerFromElement($, $el) {
 
         for (const selector of nameSelectors) {
             const nameEl = $el.find(selector).first();
-            if (nameEl.length && nameEl.text().trim()) {
-                name = nameEl.text().trim();
-                profileUrl = nameEl.attr('href') || '';
-                if (profileUrl && !profileUrl.startsWith('http')) {
-                    profileUrl = `https://www.avvo.com${profileUrl}`;
-                }
+            if (nameEl.length && normalizeText(nameEl.text())) {
+                name = normalizeText(nameEl.text());
+                profileUrl = normalizeUrl(nameEl.attr('href') || '', baseUrl);
                 break;
             }
         }
@@ -413,15 +392,14 @@ function extractLawyerFromElement($, $el) {
             '[data-testid="rating"]',
             '.rating-value',
             '.avvo-rating',
-            '[class*="rating"]'
+            '[class*="rating"]',
         ];
 
         let rating = null;
         for (const selector of ratingSelectors) {
             const ratingEl = $el.find(selector).first();
             if (ratingEl.length) {
-                const ratingText = ratingEl.text().trim();
-                const ratingMatch = ratingText.match(/(\d+\.?\d*)/);
+                const ratingMatch = normalizeText(ratingEl.text()).match(/(\d+\.?\d*)/);
                 if (ratingMatch) {
                     rating = parseFloat(ratingMatch[1]);
                     break;
@@ -432,19 +410,15 @@ function extractLawyerFromElement($, $el) {
         const reviewSelectors = [
             '[data-testid="review-count"]',
             '.review-count',
-            '[class*="review"]'
+            '[class*="review"]',
         ];
 
         let reviewCount = 0;
         for (const selector of reviewSelectors) {
             const reviewEl = $el.find(selector).first();
             if (reviewEl.length) {
-                const reviewText = reviewEl.text().trim();
-                const reviewMatch = reviewText.match(/(\d+)/);
-                if (reviewMatch) {
-                    reviewCount = parseInt(reviewMatch[1], 10);
-                    break;
-                }
+                reviewCount = toInt(reviewEl.text());
+                break;
             }
         }
 
@@ -452,7 +426,7 @@ function extractLawyerFromElement($, $el) {
             '[data-testid="practice-areas"]',
             '.practice-areas',
             '.specialties',
-            '[class*="practice"]'
+            '[class*="practice"]',
         ];
 
         let practiceAreas = [];
@@ -460,7 +434,7 @@ function extractLawyerFromElement($, $el) {
             const practiceEl = $el.find(selector);
             if (practiceEl.length) {
                 practiceEl.find('li, span, a').each((_, item) => {
-                    const area = $(item).text().trim();
+                    const area = normalizeText($(item).text());
                     if (area && area.length > 2) {
                         practiceAreas.push(area);
                     }
@@ -473,9 +447,9 @@ function extractLawyerFromElement($, $el) {
             for (const selector of practiceAreaSelectors) {
                 const practiceEl = $el.find(selector).first();
                 if (practiceEl.length) {
-                    const text = practiceEl.text().trim();
+                    const text = normalizeText(practiceEl.text());
                     if (text.includes(',')) {
-                        practiceAreas = text.split(',').map(a => a.trim()).filter(a => a.length > 2);
+                        practiceAreas = text.split(',').map((area) => normalizeText(area)).filter(Boolean);
                         break;
                     }
                 }
@@ -486,14 +460,14 @@ function extractLawyerFromElement($, $el) {
             '[data-testid="location"]',
             '.location',
             '.address',
-            '[class*="location"]'
+            '[class*="location"]',
         ];
 
         let location = '';
         for (const selector of locationSelectors) {
             const locationEl = $el.find(selector).first();
-            if (locationEl.length && locationEl.text().trim()) {
-                location = locationEl.text().trim();
+            if (locationEl.length && normalizeText(locationEl.text())) {
+                location = normalizeText(locationEl.text());
                 break;
             }
         }
@@ -502,14 +476,14 @@ function extractLawyerFromElement($, $el) {
             '[data-testid="phone"]',
             '.phone',
             'a[href^="tel:"]',
-            '[class*="phone"]'
+            '[class*="phone"]',
         ];
 
         let phone = '';
         for (const selector of phoneSelectors) {
             const phoneEl = $el.find(selector).first();
             if (phoneEl.length) {
-                phone = phoneEl.text().trim() || phoneEl.attr('href')?.replace('tel:', '') || '';
+                phone = normalizeText(phoneEl.text()) || normalizeText(phoneEl.attr('href')?.replace('tel:', ''));
                 if (phone) break;
             }
         }
@@ -518,14 +492,14 @@ function extractLawyerFromElement($, $el) {
             '[data-testid="website"]',
             'a[href*="website"]',
             '.website',
-            'a[data-website]'
+            'a[data-website]',
         ];
 
         let website = '';
         for (const selector of websiteSelectors) {
             const websiteEl = $el.find(selector).first();
             if (websiteEl.length) {
-                website = websiteEl.attr('href') || '';
+                website = normalizeUrl(websiteEl.attr('href') || '', baseUrl);
                 if (website) break;
             }
         }
@@ -533,26 +507,22 @@ function extractLawyerFromElement($, $el) {
         const yearsLicensedSelectors = [
             '[data-testid="years-licensed"]',
             '.years-licensed',
-            '[class*="years"]'
+            '[class*="years"]',
         ];
 
         let yearsLicensed = null;
         for (const selector of yearsLicensedSelectors) {
             const yearsEl = $el.find(selector).first();
             if (yearsEl.length) {
-                const yearsText = yearsEl.text().trim();
-                const yearsMatch = yearsText.match(/(\d+)/);
-                if (yearsMatch) {
-                    yearsLicensed = parseInt(yearsMatch[1], 10);
-                    break;
-                }
+                yearsLicensed = toInt(yearsEl.text());
+                break;
             }
         }
 
         const barSelectors = [
             '[data-testid="bar-admissions"]',
             '.bar-admissions',
-            '[class*="bar"]'
+            '[class*="bar"]',
         ];
 
         let barAdmissions = [];
@@ -560,7 +530,7 @@ function extractLawyerFromElement($, $el) {
             const barEl = $el.find(selector);
             if (barEl.length) {
                 barEl.find('li, span').each((_, item) => {
-                    const bar = $(item).text().trim();
+                    const bar = normalizeText($(item).text());
                     if (bar && bar.length > 1) {
                         barAdmissions.push(bar);
                     }
@@ -572,7 +542,7 @@ function extractLawyerFromElement($, $el) {
         const langSelectors = [
             '[data-testid="languages"]',
             '.languages',
-            '[class*="language"]'
+            '[class*="language"]',
         ];
 
         let languages = [];
@@ -580,7 +550,7 @@ function extractLawyerFromElement($, $el) {
             const langEl = $el.find(selector);
             if (langEl.length) {
                 langEl.find('li, span').each((_, item) => {
-                    const lang = $(item).text().trim();
+                    const lang = normalizeText($(item).text());
                     if (lang && lang.length > 1) {
                         languages.push(lang);
                     }
@@ -594,121 +564,236 @@ function extractLawyerFromElement($, $el) {
             '.bio',
             '.description',
             '.profile-description',
-            'p'
+            'p',
         ];
 
         let bio = '';
         for (const selector of bioSelectors) {
             const bioEl = $el.find(selector).first();
-            if (bioEl.length && bioEl.text().trim().length > 50) {
-                bio = bioEl.text().trim();
+            const text = normalizeText(bioEl.text());
+            if (bioEl.length && text.length > 50) {
+                bio = text;
                 break;
             }
         }
 
-        if (name || profileUrl) {
-            return {
-                name: name || 'Unknown',
-                rating,
-                reviewCount,
-                practiceAreas,
-                location,
-                phone,
-                email: '',
-                website,
-                yearsLicensed,
-                barAdmissions,
-                languages,
-                profileUrl,
-                bio,
-                scrapedAt: new Date().toISOString()
-            };
-        }
-        return null;
+        if (!name && !profileUrl) return null;
+
+        return {
+            name: name || 'Unknown',
+            rating,
+            reviewCount,
+            practiceAreas,
+            location,
+            phone,
+            email: '',
+            website,
+            yearsLicensed,
+            barAdmissions,
+            languages,
+            profileUrl,
+            bio,
+            scrapedAt: new Date().toISOString(),
+        };
     } catch (err) {
         log.debug(`Error extracting individual lawyer: ${err.message}`);
         return null;
     }
 }
 
-/**
- * Debug: Save page HTML snippet for analysis when 0 lawyers found
- */
-async function saveDebugInfo(page) {
+async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeReviews }) {
     try {
-        const html = await page.content();
-        const $ = cheerio.load(html);
-
-        const articleCount = $('article').length;
-        const divLawyerCount = $('[class*="lawyer"]').length;
-        const dataTestIdCount = $('[data-testid]').length;
-
-        log.warning('DEBUG: Page structure analysis', {
-            articleCount,
-            divLawyerCount,
-            dataTestIdCount,
-            title: $('title').text(),
-            hasCloudflare: html.includes('Just a moment') || html.includes('cf-browser')
+        const response = await gotScraping({
+            url: profileUrl,
+            headers: {
+                ...DEFAULT_HEADERS,
+                'User-Agent': userAgent,
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'same-origin',
+            },
+            proxyUrl,
+            timeout: { request: 20000 },
+            retry: { limit: 0 },
+            throwHttpErrors: false,
         });
 
-        await Actor.setValue('DEBUG_PAGE_HTML', html, { contentType: 'text/html' });
-        log.info('Saved full page HTML to DEBUG_PAGE_HTML for analysis');
+        if ([403, 429, 503].includes(response.statusCode)) {
+            return { blocked: true };
+        }
+        if (response.statusCode !== 200) {
+            return null;
+        }
 
+        const html = typeof response.body === 'string' ? response.body : response.body.toString('utf-8');
+        if (isBlockedHtml(html)) {
+            return { blocked: true };
+        }
+
+        const $ = cheerio.load(html);
+
+        const bio = normalizeText(
+            $('[data-testid="bio"], .lawyer-bio, .bio-text, .profile-bio').first().text()
+        );
+
+        const education = [];
+        $('[data-testid="education"] li, .education-item, .school-item, [class*="education"] li').each((_, el) => {
+            const value = normalizeText($(el).text());
+            if (value) education.push(value);
+        });
+
+        const awards = [];
+        $('[data-testid="awards"] li, .award-item, [class*="award"] li').each((_, el) => {
+            const value = normalizeText($(el).text());
+            if (value) awards.push(value);
+        });
+
+        let reviews = [];
+        if (includeReviews) {
+            const jsonLd = extractJsonLdObjects(html);
+            jsonLd.forEach((item) => {
+                const reviewData = normalizeArray(item.review || item.reviews);
+                if (reviewData.length > 0) {
+                    reviews = reviews.concat(reviewData);
+                }
+            });
+        }
+
+        return { bio, education, awards, reviews };
     } catch (error) {
-        log.warning(`Failed to save debug info: ${error.message}`);
+        log.debug(`Failed to fetch profile page ${profileUrl}: ${error.message}`);
+        return null;
     }
 }
 
-/**
- * Main Actor execution
- */
-try {
-    const input = await Actor.getInput() || {};
+async function enrichLawyersWithProfiles(lawyers, options) {
+    if (lawyers.length === 0) return lawyers;
 
-    log.info('Starting Avvo Lawyers Scraper', {
-        startUrl: input.startUrl,
-        practiceArea: input.practiceArea,
-        state: input.state,
-        city: input.city,
-        maxLawyers: input.maxLawyers
-    });
+    const { maxConcurrency, proxyUrl, userAgent, includeReviews } = options;
+    const enriched = [];
+    let blockedCount = 0;
 
-    if (!input.startUrl?.trim() && (!input.practiceArea?.trim() || !input.state?.trim())) {
-        throw new Error('Invalid input: Either provide a "startUrl" OR both "practiceArea" and "state"');
+    for (let i = 0; i < lawyers.length; i += maxConcurrency) {
+        const batch = lawyers.slice(i, i + maxConcurrency);
+        const batchResults = await Promise.all(
+            batch.map(async (lawyer) => {
+                if (!lawyer.profileUrl) return lawyer;
+                const profileData = await fetchLawyerProfile(lawyer.profileUrl, {
+                    proxyUrl,
+                    userAgent,
+                    includeReviews,
+                });
+                if (profileData?.blocked) {
+                    blockedCount += 1;
+                    return lawyer;
+                }
+                if (!profileData) return lawyer;
+                return {
+                    ...lawyer,
+                    bio: profileData.bio || lawyer.bio,
+                    education: profileData.education || [],
+                    awards: profileData.awards || [],
+                    reviews: profileData.reviews || lawyer.reviews || [],
+                };
+            })
+        );
+        enriched.push(...batchResults);
+        if (i + maxConcurrency < lawyers.length) {
+            await sleep(200);
+        }
     }
 
-    const maxLawyers = input.maxLawyers ?? 50;
-    if (maxLawyers < 0 || maxLawyers > 10000) {
-        throw new Error('maxLawyers must be between 0 and 10000');
+    if (blockedCount > 0) {
+        log.warning(`${blockedCount} profile pages were blocked - using listing data only.`);
+    }
+    return enriched;
+}
+
+async function saveDebugHtml({ html, key, url, extra }) {
+    if (!html) return;
+    await Actor.setValue(key, html, { contentType: 'text/html' });
+    log.info(`Saved debug HTML for ${url} to ${key}`);
+    if (extra) log.debug(extra);
+}
+
+function buildSearchUrl(input) {
+    const practiceArea = input.practiceArea || 'bankruptcy-debt';
+    const state = input.state || 'al';
+    const city = input.city ? `${input.city.toLowerCase()}-` : '';
+    return `https://www.avvo.com/${practiceArea}-lawyer/${city}${state}.html`;
+}
+
+function buildStartUrls(input) {
+    if (Array.isArray(input.startUrls) && input.startUrls.length > 0) {
+        return input.startUrls.map((item) => item.url).filter(Boolean);
+    }
+    if (input.startUrl && input.startUrl.trim()) {
+        return [input.startUrl.trim()];
+    }
+    return [buildSearchUrl(input)];
+}
+
+async function enqueueSitemapUrls({ requestQueue, proxyUrl, limit }) {
+    const sitemapCandidates = [
+        'https://www.avvo.com/sitemap.xml',
+        'https://www.avvo.com/sitemaps/sitemap.xml',
+    ];
+
+    const urls = new Set();
+    for (const sitemapUrl of sitemapCandidates) {
+        try {
+            const response = await gotScraping({
+                url: sitemapUrl,
+                headers: DEFAULT_HEADERS,
+                proxyUrl,
+                timeout: { request: 20000 },
+                retry: { limit: 0 },
+                throwHttpErrors: false,
+            });
+
+            if (response.statusCode !== 200) continue;
+            const bodyText = typeof response.body === 'string' ? response.body : response.body.toString('utf-8');
+
+            const locMatches = bodyText.match(/<loc>([^<]+)<\/loc>/g) || [];
+            locMatches.forEach((loc) => {
+                const url = loc.replace('<loc>', '').replace('</loc>', '');
+                if (url.includes('/attorneys/') || url.includes('/attorney/')) {
+                    urls.add(url);
+                }
+            });
+        } catch (error) {
+            log.debug(`Failed to fetch sitemap ${sitemapUrl}: ${error.message}`);
+        }
     }
 
-    const searchUrl = buildSearchUrl(input);
-    log.info(`Search URL: ${searchUrl}`);
+    const limited = limit > 0 ? [...urls].slice(0, limit) : [...urls];
+    for (const url of limited) {
+        await requestQueue.addRequest({
+            url,
+            userData: { label: LABELS.PROFILE },
+        });
+    }
 
-    const proxyConfiguration = await Actor.createProxyConfiguration(
-        input.proxyConfiguration || { useApifyProxy: true }
-    );
+    if (limited.length > 0) {
+        log.info(`Enqueued ${limited.length} profile URLs from sitemaps`);
+    }
+}
 
-    let totalLawyersScraped = 0;
-    let pagesProcessed = 0;
-    let extractionMethod = 'None';
-    const startTime = Date.now();
-
-    const seenLawyerUrls = new Set();
-
-    const proxyUrl = await proxyConfiguration.newUrl();
+async function runBrowserFallback({ startUrls, proxyConfiguration, stats, maxLawyers, includeContactInfo, includeReviews }) {
+    log.info('Running browser fallback with Playwright (Camoufox)');
+    const seen = new Set();
 
     const crawler = new PlaywrightCrawler({
         proxyConfiguration,
-        maxRequestsPerCrawl: 20,
-        maxConcurrency: 3,
-        navigationTimeoutSecs: 30,
+        maxRequestsPerCrawl: 5,
+        maxConcurrency: 1,
+        navigationTimeoutSecs: 40,
         requestHandlerTimeoutSecs: 120,
         launchContext: {
             launcher: firefox,
             launchOptions: await camoufoxLaunchOptions({
                 headless: true,
-                proxy: proxyUrl,
+                proxy: await proxyConfiguration.newUrl(),
                 geoip: true,
                 os: 'windows',
                 locale: 'en-US',
@@ -720,216 +805,405 @@ try {
                 },
             }),
         },
-
         async requestHandler({ page, request }) {
-            pagesProcessed++;
-            log.info(`Processing page ${pagesProcessed}: ${request.url}`);
+            await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 40000 });
+            await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
-            try {
-                await page.setExtraHTTPHeaders({
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-                    'Sec-Fetch-Dest': 'document',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Sec-Fetch-User': '?1',
-                    'Upgrade-Insecure-Requests': '1',
+            const html = await page.content();
+            if (isBlockedHtml(html)) {
+                log.warning(`Browser fallback blocked on ${request.url}`);
+                return;
+            }
+
+            const baseUrl = request.loadedUrl || request.url;
+            const lawyers = [];
+            const embeddedPayloads = extractEmbeddedJson(html);
+
+            lawyers.push(...extractLawyersFromJsonLd(html, baseUrl));
+            embeddedPayloads.forEach((payload) => {
+                lawyers.push(...extractLawyersFromApiJson(payload, baseUrl));
+            });
+
+            const $ = cheerio.load(html);
+            if (lawyers.length === 0) {
+                lawyers.push(...extractLawyerDataViaHtml($, baseUrl));
+            }
+
+            let filtered = lawyers.filter((lawyer) => {
+                if (!lawyer.profileUrl) return true;
+                if (seen.has(lawyer.profileUrl)) return false;
+                seen.add(lawyer.profileUrl);
+                return true;
+            });
+
+            if (maxLawyers > 0) {
+                filtered = filtered.slice(0, Math.max(0, maxLawyers - stats.totalLawyersScraped));
+            }
+
+            if (filtered.length === 0) return;
+
+            if (includeContactInfo || includeReviews) {
+                const userAgent = USER_AGENTS[0];
+                const proxyUrl = await proxyConfiguration.newUrl();
+                filtered = await enrichLawyersWithProfiles(filtered, {
+                    maxConcurrency: 2,
+                    proxyUrl,
+                    userAgent,
+                    includeReviews,
                 });
+            }
 
-                await page.goto(request.url, {
-                    waitUntil: 'domcontentloaded',
-                    timeout: 30000
-                });
+            await Actor.pushData(filtered);
+            stats.totalLawyersScraped += filtered.length;
+        },
+    });
 
-                await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => { });
+    await crawler.run(startUrls.map((url) => ({ url })));
+}
 
-                let cloudflareDetected = false;
-                let retryCount = 0;
-                const maxRetries = 3;
+async function handleLawyers(lawyers, options) {
+    const {
+        maxLawyers,
+        seenProfileUrls,
+        includeContactInfo,
+        includeReviews,
+        proxyUrl,
+        userAgent,
+        maxProfileConcurrency,
+        stats,
+    } = options;
 
-                while (retryCount < maxRetries) {
-                    const title = await page.title();
-                    const bodyText = await page.evaluate(() => document.body?.innerText?.substring(0, 500) || '');
+    let filtered = lawyers.filter((lawyer) => {
+        if (!lawyer.profileUrl) return true;
+        if (seenProfileUrls.has(lawyer.profileUrl)) return false;
+        seenProfileUrls.add(lawyer.profileUrl);
+        return true;
+    });
 
-                    if (title.includes('Just a moment') ||
-                        title.includes('Cloudflare') ||
-                        bodyText.includes('unusual traffic') ||
-                        bodyText.includes('Checking your browser')) {
+    if (maxLawyers > 0) {
+        filtered = filtered.slice(0, Math.max(0, maxLawyers - stats.totalLawyersScraped));
+    }
 
-                        cloudflareDetected = true;
-                        log.warning(`Cloudflare challenge detected (attempt ${retryCount + 1}/${maxRetries})`);
+    if (filtered.length === 0) return;
 
-                        await page.waitForTimeout(3000);
+    if (includeContactInfo || includeReviews) {
+        const enriched = await enrichLawyersWithProfiles(filtered, {
+            maxConcurrency: maxProfileConcurrency,
+            proxyUrl,
+            userAgent,
+            includeReviews,
+        });
+        stats.profileEnrichments += enriched.length;
+        filtered = enriched;
+    }
 
-                        try {
-                            const turnstileFrame = page.frameLocator('iframe[src*="challenges.cloudflare.com"]');
-                            const checkbox = turnstileFrame.locator('input[type="checkbox"], .cf-turnstile-wrapper');
+    await Actor.pushData(filtered);
+    stats.totalLawyersScraped += filtered.length;
+}
 
-                            if (await checkbox.count() > 0) {
-                                log.info('Found Turnstile checkbox, attempting click...');
-                                await checkbox.first().click({ timeout: 5000 });
-                                await page.waitForTimeout(3000);
-                            }
-                        } catch (clickErr) {
-                            log.debug('No clickable Turnstile element found');
-                        }
+try {
+    const input = await Actor.getInput() || {};
 
-                        await page.waitForTimeout(5000);
-                        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => { });
+    const maxLawyers = input.maxLawyers ?? 50;
+    const maxConcurrency = 10;
+    const maxProfileConcurrency = 5;
+    const maxRequestsPerCrawl = 1000;
+    const minDelayMs = 250;
+    const maxDelayMs = 1000;
+    const useApiFirst = true;
+    const useHtmlFallback = true;
+    const useBrowserFallback = false;
+    const useSitemaps = false;
+    const apiEndpoint = '';
+    const includeReviews = input.includeReviews ?? true;
+    const includeContactInfo = input.includeContactInfo ?? true;
 
-                        retryCount++;
-                    } else {
-                        if (cloudflareDetected) {
-                            log.info('Cloudflare challenge bypassed successfully!');
-                        }
-                        break;
+    if (!input.startUrl?.trim()
+        && (!Array.isArray(input.startUrls) || input.startUrls.length === 0)
+        && (!input.practiceArea?.trim() || !input.state?.trim())) {
+        throw new Error('Invalid input: provide "startUrl", "startUrls", or both "practiceArea" and "state".');
+    }
+
+    if (maxLawyers < 0 || maxLawyers > 10000) {
+        throw new Error('maxLawyers must be between 0 and 10000');
+    }
+
+    log.info('Starting Avvo Lawyers Scraper', {
+        startUrl: input.startUrl,
+        startUrls: input.startUrls?.length || 0,
+        practiceArea: input.practiceArea,
+        state: input.state,
+        city: input.city,
+        maxLawyers,
+        useApiFirst,
+        useHtmlFallback,
+        useBrowserFallback,
+    });
+
+    const startUrls = buildStartUrls(input);
+    const proxyConfiguration = await Actor.createProxyConfiguration(
+        input.proxyConfiguration || { useApifyProxy: true }
+    );
+
+    const stats = {
+        totalLawyersScraped: 0,
+        pagesProcessed: 0,
+        apiExtractions: 0,
+        embeddedJsonExtractions: 0,
+        jsonLdExtractions: 0,
+        htmlExtractions: 0,
+        profileEnrichments: 0,
+        blockedRequests: 0,
+        timestamp: new Date().toISOString(),
+    };
+
+    const seenProfileUrls = new Set();
+    const discoveredApiUrls = new Set();
+    const requestQueue = await RequestQueue.open();
+
+    if (apiEndpoint) {
+        await requestQueue.addRequest({
+            url: normalizeUrl(apiEndpoint, 'https://www.avvo.com'),
+            userData: { label: LABELS.API },
+            forefront: true,
+        });
+    }
+
+    for (const url of startUrls) {
+        await requestQueue.addRequest({
+            url,
+            userData: { label: LABELS.LISTING },
+        });
+    }
+
+    if (useSitemaps) {
+        const proxyUrl = await proxyConfiguration.newUrl();
+        await enqueueSitemapUrls({
+            requestQueue,
+            proxyUrl,
+            limit: maxLawyers > 0 ? maxLawyers : 0,
+        });
+    }
+
+    const crawler = new CheerioCrawler({
+        requestQueue,
+        proxyConfiguration,
+        maxConcurrency,
+        maxRequestsPerCrawl,
+        requestHandlerTimeoutSecs: 120,
+        useSessionPool: true,
+        sessionPoolOptions: {
+            sessionOptions: {
+                maxErrorScore: 3,
+            },
+        },
+        preNavigationHooks: [
+            ({ session }, gotOptions) => {
+                if (!session.userData.userAgent) {
+                    session.userData.userAgent = USER_AGENTS[randomBetween(0, USER_AGENTS.length - 1)];
+                }
+                gotOptions.headers = {
+                    ...DEFAULT_HEADERS,
+                    ...gotOptions.headers,
+                    'User-Agent': session.userData.userAgent,
+                };
+            },
+        ],
+        async requestHandler(context) {
+            const { request, body, $: cheerioRoot, session, proxyInfo } = context;
+            const baseUrl = request.loadedUrl || request.url;
+            stats.pagesProcessed += 1;
+
+            const rawHtml = typeof body === 'string' ? body : body?.toString('utf-8') || '';
+            if (rawHtml && isBlockedHtml(rawHtml)) {
+                stats.blockedRequests += 1;
+                session.markBad();
+                if (input.debugHtml) {
+                    await saveDebugHtml({
+                        html: rawHtml,
+                        key: `DEBUG_BLOCKED_${stats.pagesProcessed}`,
+                        url: request.url,
+                    });
+                }
+                throw new Error('Blocked by anti-bot protection');
+            }
+
+            if (request.userData.label === LABELS.API) {
+                try {
+                    const json = await fetchJsonWithRetries(request.url, {
+                        proxyUrl: proxyInfo?.url,
+                        headers: {
+                            ...DEFAULT_HEADERS,
+                            'User-Agent': session.userData.userAgent,
+                        },
+                    });
+                    const lawyers = extractLawyersFromApiJson(json, baseUrl);
+                    if (lawyers.length > 0) {
+                        stats.apiExtractions += lawyers.length;
+                        await handleLawyers(lawyers, {
+                            maxLawyers,
+                            seenProfileUrls,
+                            includeContactInfo: includeContactInfo,
+                            includeReviews: includeReviews,
+                            proxyUrl: proxyInfo?.url,
+                            userAgent: session.userData.userAgent,
+                            maxProfileConcurrency,
+                            stats,
+                        });
+                    }
+                    const nextPageUrl = extractNextPageUrlFromApi(json, baseUrl);
+                    if (nextPageUrl) {
+                        await requestQueue.addRequest({
+                            url: nextPageUrl,
+                            userData: { label: LABELS.API },
+                        });
+                    }
+                } catch (error) {
+                    log.debug(`API request failed (${request.url}): ${error.message}`);
+                }
+            } else if (request.userData.label === LABELS.PROFILE) {
+                const lawyer = {
+                    name: '',
+                    profileUrl: request.url,
+                    scrapedAt: new Date().toISOString(),
+                };
+                let profile = lawyer;
+                if (includeContactInfo || includeReviews) {
+                    const enriched = await fetchLawyerProfile(request.url, {
+                        proxyUrl: proxyInfo?.url,
+                        userAgent: session.userData.userAgent,
+                        includeReviews: includeReviews,
+                    });
+                    if (enriched && !enriched.blocked) {
+                        profile = {
+                            ...lawyer,
+                            bio: enriched.bio,
+                            education: enriched.education,
+                            awards: enriched.awards,
+                            reviews: enriched.reviews,
+                        };
+                    }
+                }
+                await Actor.pushData(profile);
+                stats.totalLawyersScraped += 1;
+            } else {
+                const lawyers = [];
+
+                if (useApiFirst) {
+                    const apiUrls = extractApiUrlsFromHtml(rawHtml, baseUrl)
+                        .filter((url) => !discoveredApiUrls.has(url));
+                    for (const url of apiUrls) {
+                        discoveredApiUrls.add(url);
+                        await requestQueue.addRequest({
+                            url,
+                            userData: { label: LABELS.API },
+                            forefront: true,
+                        });
                     }
                 }
 
-                if (retryCount >= maxRetries) {
-                    log.error('Failed to bypass Cloudflare after maximum retries');
-                    await saveDebugInfo(page);
+                const embeddedJson = extractEmbeddedJson(rawHtml);
+                if (embeddedJson.length > 0) {
+                    const embeddedLawyers = [];
+                    embeddedJson.forEach((payload) => {
+                        embeddedLawyers.push(...extractLawyersFromApiJson(payload, baseUrl));
+                    });
+                    if (embeddedLawyers.length > 0) {
+                        lawyers.push(...embeddedLawyers);
+                        stats.embeddedJsonExtractions += embeddedLawyers.length;
+                    }
+                }
+
+                if (lawyers.length === 0) {
+                    const jsonLdLawyers = extractLawyersFromJsonLd(rawHtml, baseUrl);
+                    if (jsonLdLawyers.length > 0) {
+                        lawyers.push(...jsonLdLawyers);
+                        stats.jsonLdExtractions += jsonLdLawyers.length;
+                    }
+                }
+
+                if (lawyers.length === 0 && useHtmlFallback) {
+                    if (cheerioRoot) {
+                        const htmlLawyers = extractLawyerDataViaHtml(cheerioRoot, baseUrl);
+                        if (htmlLawyers.length > 0) {
+                            lawyers.push(...htmlLawyers);
+                            stats.htmlExtractions += htmlLawyers.length;
+                        }
+                    }
+                }
+
+                if (lawyers.length === 0 && input.debugHtml) {
+                    await saveDebugHtml({
+                        html: rawHtml,
+                        key: `DEBUG_NO_RESULTS_${stats.pagesProcessed}`,
+                        url: request.url,
+                    });
+                }
+
+                if (lawyers.length > 0) {
+                    await handleLawyers(lawyers, {
+                        maxLawyers,
+                        seenProfileUrls,
+                        includeContactInfo: includeContactInfo,
+                        includeReviews: includeReviews,
+                        proxyUrl: proxyInfo?.url,
+                        userAgent: session.userData.userAgent,
+                        maxProfileConcurrency,
+                        stats,
+                    });
+                }
+
+                if (maxLawyers > 0 && stats.totalLawyersScraped >= maxLawyers) {
                     return;
                 }
 
-                await page.waitForTimeout(2000);
-
-                let lawyers = [];
-
-                // Strategy 1: Try JSON-LD extraction first
-                lawyers = await extractLawyersViaJsonLD(page);
-                if (lawyers.length > 0) {
-                    extractionMethod = 'JSON-LD';
-                    log.info(`✓ JSON-LD extraction successful: ${lawyers.length} lawyers`);
-                }
-
-                // Strategy 2: Try internal API/embedded data
-                if (lawyers.length === 0) {
-                    lawyers = await extractLawyersViaAPI(page);
-                    if (lawyers.length > 0) {
-                        extractionMethod = 'Internal API';
-                        log.info(`✓ Internal API extraction successful: ${lawyers.length} lawyers`);
-                    }
-                }
-
-                // Strategy 3: Fall back to HTML parsing
-                if (lawyers.length === 0) {
-                    lawyers = await extractLawyerDataViaHTML(page);
-                    if (lawyers.length > 0) {
-                        extractionMethod = 'HTML Parsing (Cheerio)';
-                        log.info(`✓ HTML parsing successful: ${lawyers.length} lawyers`);
-                    }
-                }
-
-                if (lawyers.length === 0) {
-                    log.warning('No lawyers found with any extraction method. Saving debug info...');
-                    await saveDebugInfo(page);
-                }
-
-                if (lawyers.length > 0) {
-                    let lawyersToSave = maxLawyers > 0
-                        ? lawyers.slice(0, Math.max(0, maxLawyers - totalLawyersScraped))
-                        : lawyers;
-
-                    const uniqueLawyers = lawyersToSave.filter(lawyer => {
-                        if (!lawyer.profileUrl) return true;
-
-                        if (seenLawyerUrls.has(lawyer.profileUrl)) {
-                            log.debug(`Skipping duplicate lawyer: ${lawyer.name} (${lawyer.profileUrl})`);
-                            return false;
-                        }
-
-                        seenLawyerUrls.add(lawyer.profileUrl);
-                        return true;
-                    });
-
-                    if (uniqueLawyers.length < lawyersToSave.length) {
-                        log.info(`Removed ${lawyersToSave.length - uniqueLawyers.length} duplicate lawyers`);
-                    }
-
-                    lawyersToSave = uniqueLawyers;
-
-                    if (lawyersToSave.length > 0 && input.includeContactInfo) {
-                        log.info('Enriching lawyers with full profiles from detail pages...');
-                        lawyersToSave = await enrichLawyersWithProfiles(lawyersToSave, page);
-                    }
-
-                    if (lawyersToSave.length > 0) {
-                        await Actor.pushData(lawyersToSave);
-                        totalLawyersScraped += lawyersToSave.length;
-                        log.info(`Saved ${lawyersToSave.length} lawyers. Total: ${totalLawyersScraped}`);
-                    }
-
-                    if (maxLawyers > 0 && totalLawyersScraped >= maxLawyers) {
-                        log.info(`Reached maximum lawyers limit: ${maxLawyers}`);
-                        return;
-                    }
-
-                    const hasNextPage = await page.evaluate(() => {
-                        const nextButton = document.querySelector('a[rel="next"], .next-page, [class*="next"]');
-                        return nextButton && !nextButton.classList.contains('disabled');
-                    });
-
-                    if (hasNextPage && totalLawyersScraped < maxLawyers) {
-                        const nextPageUrl = await page.evaluate(() => {
-                            const nextButton = document.querySelector('a[rel="next"], .next-page, [class*="next"]');
-                            return nextButton?.href || '';
+                if (cheerioRoot) {
+                    const nextPageUrl = extractNextPageUrlFromHtml(cheerioRoot, baseUrl);
+                    if (nextPageUrl) {
+                        await requestQueue.addRequest({
+                            url: nextPageUrl,
+                            userData: { label: LABELS.LISTING },
                         });
-
-                        if (nextPageUrl && nextPageUrl.startsWith('http')) {
-                            log.info(`Found next page: ${nextPageUrl}`);
-                            await crawler.addRequests([{
-                                url: nextPageUrl,
-                                uniqueKey: nextPageUrl
-                            }]);
-                        }
-                    } else if (!hasNextPage) {
-                        log.info('No next page button found - this may be the last page');
                     }
-                } else {
-                    log.warning('No lawyers found on this page');
                 }
+            }
 
-            } catch (error) {
-                log.error(`Error processing page: ${error.message}`, {
-                    url: request.url
-                });
+            if (maxDelayMs > 0) {
+                await sleep(randomBetween(minDelayMs, maxDelayMs));
             }
         },
-
-        async failedRequestHandler({ request }, error) {
-            log.error(`Request failed: ${request.url} - ${error.message}`);
-        }
+        failedRequestHandler: async ({ request }, error) => {
+            log.warning(`Request failed: ${request.url} - ${error.message}`);
+        },
     });
 
-    log.info('Starting crawler with Camoufox for Cloudflare bypass...');
-    await crawler.run([searchUrl]);
+    await crawler.run();
 
-    const endTime = Date.now();
-    const duration = Math.round((endTime - startTime) / 1000);
-
-    const statistics = {
-        totalLawyersScraped,
-        pagesProcessed,
-        extractionMethod,
-        duration: `${duration} seconds`,
-        timestamp: new Date().toISOString()
-    };
-
-    await Actor.setValue('statistics', statistics);
-
-    log.info('✓ Scraping completed successfully!', statistics);
-
-    if (totalLawyersScraped > 0) {
-        log.info(`Successfully scraped ${totalLawyersScraped} lawyers in ${duration} seconds`);
-    } else {
-        log.warning('No lawyers were scraped. Please check your search parameters.');
+    if (stats.totalLawyersScraped === 0 && useBrowserFallback) {
+        await runBrowserFallback({
+            startUrls,
+            proxyConfiguration,
+            stats,
+            maxLawyers,
+            includeContactInfo: includeContactInfo,
+            includeReviews: includeReviews,
+        });
     }
 
+    await Actor.setValue('statistics', {
+        ...stats,
+        finishedAt: new Date().toISOString(),
+    });
+
+    if (stats.totalLawyersScraped > 0) {
+        log.info(`Scraping completed: ${stats.totalLawyersScraped} lawyers saved`);
+    } else {
+        log.warning('No lawyers were scraped. Check input parameters or enable browser fallback.');
+    }
 } catch (error) {
     log.exception(error, 'Actor failed with error');
     throw error;
+} finally {
+    await Actor.exit();
 }
 
-await Actor.exit();
