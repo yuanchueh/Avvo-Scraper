@@ -66,19 +66,35 @@ function normalizeExternalWebsite(value, baseUrl) {
 
 function normalizeImage(value, baseUrl) {
     if (!value) return '';
+
+    let imgUrl = '';
     if (Array.isArray(value)) {
-        return normalizeImage(value[0], baseUrl);
-    }
-    if (typeof value === 'string') {
-        return normalizeUrl(value, baseUrl);
-    }
-    if (typeof value === 'object') {
-        return normalizeUrl(
+        imgUrl = normalizeImage(value[0], baseUrl);
+    } else if (typeof value === 'string') {
+        imgUrl = normalizeUrl(value, baseUrl);
+    } else if (typeof value === 'object') {
+        imgUrl = normalizeUrl(
             value.url || value.contentUrl || value['@id'] || value.thumbnailUrl || '',
             baseUrl
         );
     }
-    return '';
+
+    // Filter out Avvo logos and placeholder images
+    if (imgUrl) {
+        const urlLower = imgUrl.toLowerCase();
+        if (urlLower.includes('avvo-logo') ||
+            urlLower.includes('avvo_logo') ||
+            urlLower.includes('/logo/') ||
+            urlLower.includes('placeholder') ||
+            urlLower.includes('default-avatar') ||
+            urlLower.includes('default_avatar') ||
+            urlLower.includes('no-photo') ||
+            urlLower.includes('no_photo')) {
+            return '';
+        }
+    }
+
+    return imgUrl;
 }
 
 function pickAttrValue($el, attrs) {
@@ -420,7 +436,6 @@ function normalizeLawyer(raw, baseUrl) {
             pickFirst(raw.website, raw.websiteUrl, contactWebsite, externalSameAs),
             baseUrl
         ),
-        yearsLicensed: toInt(pickFirst(raw.yearsLicensed, raw.yearAdmitted)),
         licenseYear: null, // Will be set from HTML parsing
         licenseStates,
         barAdmissions: normalizeArray(raw.barAdmissions).map(normalizeText).filter(Boolean),
@@ -1176,19 +1191,28 @@ async function handleLawyers(lawyers, options) {
 
     if (filtered.length === 0) return;
 
-    if (includeContactInfo || includeReviews) {
-        const enriched = await enrichLawyersWithProfiles(filtered, {
-            maxConcurrency: maxProfileConcurrency,
-            proxyUrl,
-            userAgent,
-            includeReviews,
-        });
-        stats.profileEnrichments += enriched.length;
-        filtered = enriched;
-    }
+    // Process and push data in batches of 10 for incremental saving
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < filtered.length; i += BATCH_SIZE) {
+        const batch = filtered.slice(i, i + BATCH_SIZE);
 
-    await Actor.pushData(filtered);
-    stats.totalLawyersScraped += filtered.length;
+        let processedBatch = batch;
+        if (includeContactInfo || includeReviews) {
+            processedBatch = await enrichLawyersWithProfiles(batch, {
+                maxConcurrency: maxProfileConcurrency,
+                proxyUrl,
+                userAgent,
+                includeReviews,
+            });
+            stats.profileEnrichments += processedBatch.length;
+        }
+
+        // Push batch immediately
+        await Actor.pushData(processedBatch);
+        stats.totalLawyersScraped += processedBatch.length;
+
+        log.info(`Pushed batch of ${processedBatch.length} lawyers (total: ${stats.totalLawyersScraped})`);
+    }
 }
 
 try {
@@ -1428,8 +1452,7 @@ try {
                 }
 
                 if (maxLawyers > 0 && stats.totalLawyersScraped >= maxLawyers) {
-                    log.info(`Reached maxLawyers limit (${maxLawyers}). Stopping crawler.`);
-                    await requestQueue.drop();
+                    log.info(`Reached maxLawyers limit (${maxLawyers}). Stopping processing.`);
                     return;
                 }
 
