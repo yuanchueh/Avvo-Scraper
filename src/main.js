@@ -35,6 +35,11 @@ function normalizeText(value) {
     return String(value).replace(/\s+/g, ' ').trim();
 }
 
+function normalizeObjectText(value) {
+    if (!value || typeof value !== 'object') return '';
+    return normalizeText(value.value || value.text || '');
+}
+
 function normalizeUrl(value, baseUrl) {
     if (!value) return '';
     try {
@@ -42,6 +47,44 @@ function normalizeUrl(value, baseUrl) {
     } catch {
         return value;
     }
+}
+
+function normalizeExternalWebsite(value, baseUrl) {
+    const normalized = normalizeUrl(value, baseUrl);
+    if (!normalized) return '';
+    try {
+        const host = new URL(normalized).hostname.toLowerCase();
+        if (host.includes('avvo.com')) return '';
+    } catch {
+        return normalized;
+    }
+    return normalized;
+}
+
+function normalizeImage(value, baseUrl) {
+    if (!value) return '';
+    if (Array.isArray(value)) {
+        return normalizeImage(value[0], baseUrl);
+    }
+    if (typeof value === 'string') {
+        return normalizeUrl(value, baseUrl);
+    }
+    if (typeof value === 'object') {
+        return normalizeUrl(
+            value.url || value.contentUrl || value['@id'] || value.thumbnailUrl || '',
+            baseUrl
+        );
+    }
+    return '';
+}
+
+function pickAttrValue($el, attrs) {
+    if (!$el || !$el.length) return '';
+    for (const attr of attrs) {
+        const value = $el.attr(attr);
+        if (value) return value;
+    }
+    return '';
 }
 
 function normalizeArray(value) {
@@ -148,6 +191,34 @@ function extractEmbeddedJson(html) {
     return extracted;
 }
 
+function pickBestProfile(candidates, profileUrl) {
+    if (!candidates || candidates.length === 0) return null;
+    const normalizedProfileUrl = normalizeUrl(profileUrl, profileUrl);
+    let best = candidates[0];
+    let bestScore = -1;
+
+    for (const candidate of candidates) {
+        let score = 0;
+        if (candidate.profileUrl && normalizeUrl(candidate.profileUrl, profileUrl) === normalizedProfileUrl) {
+            score += 5;
+        }
+        if (candidate.email) score += 2;
+        if (candidate.phone) score += 2;
+        if (candidate.location) score += 2;
+        if (candidate.rating) score += 2;
+        if (candidate.website) score += 1;
+        if (candidate.image) score += 1;
+        if (candidate.bio) score += 1;
+        if (candidate.practiceAreas && candidate.practiceAreas.length > 0) score += 1;
+        if (score > bestScore) {
+            bestScore = score;
+            best = candidate;
+        }
+    }
+
+    return best;
+}
+
 function collectLawyerCandidates(source, candidates = [], depth = 0) {
     if (!source || depth > 7) return candidates;
     if (Array.isArray(source)) {
@@ -191,33 +262,81 @@ function normalizeLawyer(raw, baseUrl) {
             [address.addressLocality, address.addressRegion, address.postalCode].filter(Boolean).join(', ')
         );
     } else {
-        location = normalizeText(pickFirst(raw.location, raw.city, raw.region));
+        const locationParts = [
+            raw.location,
+            raw.city,
+            raw.state,
+            raw.region,
+            raw.postalCode,
+            raw.zip,
+        ].filter(Boolean);
+        location = normalizeText(locationParts.join(', '));
     }
 
     const practiceAreas = normalizeArray(
-        pickFirst(raw.practiceAreas, raw.specialties, raw.practiceArea, raw.tags, raw.knowsAbout, raw.areaServed)
+        pickFirst(
+            raw.practiceAreas,
+            raw.practice_areas,
+            raw.specialties,
+            raw.practiceArea,
+            raw.tags,
+            raw.knowsAbout,
+            raw.areaServed
+        )
     ).map(normalizeText).filter(Boolean);
+
+    const contactPoints = normalizeArray(raw.contactPoint).filter((item) => item && typeof item === 'object');
+    const contactEmail = contactPoints.map((item) => item.email).find(Boolean);
+    const contactPhone = contactPoints.map((item) => item.telephone || item.phone).find(Boolean);
+    const image = normalizeImage(
+        pickFirst(raw.image, raw.photo, raw.logo, raw.profilePhoto, raw.avatar, raw.photoUrl, raw.imageUrl),
+        baseUrl
+    );
+    const contactInfo = raw.contactInfo || raw.contact || {};
+    const contactWebsite = contactInfo.website || contactInfo.url || contactInfo.site;
 
     const sameAs = normalizeArray(raw.sameAs);
     const externalSameAs = sameAs.find((item) => typeof item === 'string' && !item.includes('avvo.com'));
 
     return {
         name: name || 'Unknown',
-        rating: toNumber(pickFirst(raw.rating, raw.avvoRating, raw.aggregateRating?.ratingValue)),
-        reviewCount: toInt(pickFirst(raw.reviewCount, raw.reviews?.length, raw.aggregateRating?.reviewCount)),
+        rating: toNumber(
+            pickFirst(
+                raw.rating,
+                raw.avvoRating,
+                raw.avvo_rating,
+                raw.ratingValue,
+                raw.aggregateRating?.ratingValue
+            )
+        ),
+        reviewCount: toInt(
+            pickFirst(
+                raw.reviewCount,
+                raw.review_count,
+                raw.reviews?.length,
+                raw.aggregateRating?.reviewCount,
+                raw.aggregateRating?.ratingCount
+            )
+        ),
         practiceAreas,
         location,
-        phone: normalizeText(pickFirst(raw.phone, raw.phoneNumber, raw.telephone)),
-        email: normalizeText(raw.email),
-        website: normalizeUrl(pickFirst(raw.website, raw.websiteUrl, externalSameAs), baseUrl),
+        phone: normalizeText(
+            pickFirst(raw.phone, raw.phoneNumber, raw.telephone, contactPhone, contactInfo.phone)
+        ),
+        email: normalizeText(pickFirst(raw.email, contactEmail, contactInfo.email)),
+        website: normalizeExternalWebsite(
+            pickFirst(raw.website, raw.websiteUrl, contactWebsite, externalSameAs),
+            baseUrl
+        ),
         yearsLicensed: toInt(pickFirst(raw.yearsLicensed, raw.yearAdmitted)),
         barAdmissions: normalizeArray(raw.barAdmissions).map(normalizeText).filter(Boolean),
-        languages: normalizeArray(raw.languages).map(normalizeText).filter(Boolean),
+        languages: normalizeArray(pickFirst(raw.languages, raw.language)).map(normalizeText).filter(Boolean),
         profileUrl,
-        bio: normalizeText(pickFirst(raw.bio, raw.description)),
+        bio: normalizeText(pickFirst(raw.bio, raw.biography, raw.summary, raw.about, raw.description)),
         education: normalizeArray(raw.education).map(normalizeText).filter(Boolean),
         awards: normalizeArray(raw.awards).map(normalizeText).filter(Boolean),
         reviews: normalizeArray(raw.reviews),
+        image,
         scrapedAt: new Date().toISOString(),
     };
 }
@@ -565,6 +684,10 @@ function extractLawyerFromElement($, $el, baseUrl) {
             '.bio',
             '.description',
             '.profile-description',
+            '.profile-summary',
+            '.lawyer-bio',
+            '.bio-text',
+            '[itemprop="description"]',
             'p',
         ];
 
@@ -577,6 +700,12 @@ function extractLawyerFromElement($, $el, baseUrl) {
                 break;
             }
         }
+
+        const imageEl = $el.find('img').first();
+        const image = normalizeUrl(
+            imageEl.attr('src') || imageEl.attr('data-src') || '',
+            baseUrl
+        );
 
         if (!name && !profileUrl) return null;
 
@@ -594,6 +723,7 @@ function extractLawyerFromElement($, $el, baseUrl) {
             languages,
             profileUrl,
             bio,
+            image,
             scrapedAt: new Date().toISOString(),
         };
     } catch (err) {
@@ -632,12 +762,23 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         }
 
         const $ = cheerio.load(html);
-        const jsonLdProfiles = extractLawyersFromJsonLd(html, profileUrl);
-        const jsonLdProfile = jsonLdProfiles[0] || null;
+        const embeddedPayloads = extractEmbeddedJson(html);
+        const embeddedCandidates = [];
+        embeddedPayloads.forEach((payload) => {
+            embeddedCandidates.push(...extractLawyersFromApiJson(payload, profileUrl));
+        });
+        const embeddedProfile = pickBestProfile(embeddedCandidates, profileUrl);
 
-        const bio = normalizeText(
-            $('[data-testid="bio"], .lawyer-bio, .bio-text, .profile-bio').first().text()
+        const jsonLdProfiles = extractLawyersFromJsonLd(html, profileUrl);
+        const jsonLdProfile = pickBestProfile(jsonLdProfiles, profileUrl);
+
+        const metaDescription = normalizeText(
+            $('meta[name="description"], meta[property="og:description"]').first().attr('content')
         );
+        const bioFromHtml = normalizeText(
+            $('[data-testid="bio"], .lawyer-bio, .bio-text, .profile-bio, [itemprop="description"]').first().text()
+        );
+        const bio = pickFirst(bioFromHtml, metaDescription, jsonLdProfile?.bio, embeddedProfile?.bio) || '';
 
         const education = [];
         $('[data-testid="education"] li, .education-item, .school-item, [class*="education"] li').each((_, el) => {
@@ -656,12 +797,28 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         const emailFromHtml = normalizeText(
             emailHref.replace(/^mailto:/i, '').split('?')[0] || emailLink.text()
         );
+        const emailFromData = normalizeText(
+            pickAttrValue(
+                $('[data-email], [data-contact-email], [data-testid="email"], .email, .contact-email').first(),
+                ['data-email', 'data-contact-email']
+            ) ||
+            $('[data-email], [data-contact-email], [data-testid="email"], .email, .contact-email')
+                .first()
+                .text()
+        );
 
         const phoneLink = $('a[href^="tel:"]').first();
         const phoneHref = phoneLink.attr('href') || '';
         const phoneFromHtml = normalizeText(
             phoneHref.replace(/^tel:/i, '').split('?')[0] || phoneLink.text()
-        ) || normalizeText($('[data-testid="phone"], .phone').first().text());
+        ) || normalizeText($('[data-testid="phone"], .phone, .contact-phone').first().text());
+        const phoneFromData = normalizeText(
+            pickAttrValue(
+                $('[data-phone], [data-contact-phone], [data-testid="phone"]').first(),
+                ['data-phone', 'data-contact-phone']
+            ) ||
+            $('[data-phone], [data-contact-phone], [data-testid="phone"]').first().text()
+        );
 
         const locationFromHtml = normalizeText(
             $('[data-testid="address"], [data-testid="location"], .profile-address, .office-address, address, .address, .location')
@@ -669,6 +826,11 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
                 .text()
         );
 
+        const ratingFromMeta = toNumber(
+            $('meta[itemprop="ratingValue"], meta[property="ratingValue"], meta[name="rating"]')
+                .first()
+                .attr('content')
+        );
         const ratingFromHtml = toNumber(
             normalizeText(
                 $('[data-testid="rating"], .avvo-rating, .rating-value, [class*="rating"]')
@@ -677,10 +839,38 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
             )
         );
 
-        const websiteFromHtml = normalizeUrl(
-            $('[data-testid="website"] a, a[data-website], a[data-event-label="Website"], a[aria-label*="Website"], a[href*="website"]')
+        const reviewCountFromMeta = toInt(
+            $('meta[itemprop="reviewCount"], meta[itemprop="ratingCount"], meta[name="reviewCount"]')
                 .first()
-                .attr('href') || '',
+                .attr('content')
+        );
+        const reviewCountFromHtml = toInt(
+            normalizeText(
+                $('[data-testid="review-count"], .review-count, [class*="review-count"], [itemprop="reviewCount"]')
+                    .first()
+                    .text()
+            )
+        );
+
+        const websiteFromHtml = normalizeExternalWebsite(
+            pickAttrValue(
+                $('[data-testid="website"] a, a[data-website], a[data-event-label="Website"], a[aria-label*="Website"], a[href*="website"], [data-website-url], [data-url]')
+                    .first(),
+                ['href', 'data-website-url', 'data-url']
+            ),
+            profileUrl
+        );
+
+        const imageFromMeta = normalizeUrl(
+            $('meta[property="og:image"], meta[name="twitter:image"], meta[itemprop="image"]').first().attr('content') || '',
+            profileUrl
+        );
+        const imageFromHtml = normalizeUrl(
+            pickAttrValue(
+                $('[data-testid="profile-photo"] img, .profile-photo img, .profile-header img, img[alt*="Attorney"], img[alt*="Lawyer"], img[itemprop="image"], img[class*="profile"], img[class*="avatar"]')
+                    .first(),
+                ['src', 'data-src', 'data-lazy-src']
+            ),
             profileUrl
         );
 
@@ -708,13 +898,21 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
             education,
             awards,
             reviews,
-            email: pickFirst(jsonLdProfile?.email, emailFromHtml),
-            phone: pickFirst(jsonLdProfile?.phone, phoneFromHtml),
-            location: pickFirst(jsonLdProfile?.location, locationFromHtml),
-            rating: pickFirst(jsonLdProfile?.rating, ratingFromHtml),
-            reviewCount: pickFirst(jsonLdProfile?.reviewCount, null),
-            website: pickFirst(jsonLdProfile?.website, websiteFromHtml),
-            practiceAreas: jsonLdProfile?.practiceAreas?.length ? jsonLdProfile.practiceAreas : practiceAreas,
+            email: pickFirst(jsonLdProfile?.email, embeddedProfile?.email, emailFromData, emailFromHtml),
+            phone: pickFirst(jsonLdProfile?.phone, embeddedProfile?.phone, phoneFromData, phoneFromHtml),
+            location: pickFirst(jsonLdProfile?.location, embeddedProfile?.location, locationFromHtml),
+            rating: pickFirst(jsonLdProfile?.rating, embeddedProfile?.rating, ratingFromMeta, ratingFromHtml),
+            reviewCount: pickFirst(
+                jsonLdProfile?.reviewCount,
+                embeddedProfile?.reviewCount,
+                reviewCountFromMeta,
+                reviewCountFromHtml
+            ),
+            website: pickFirst(jsonLdProfile?.website, embeddedProfile?.website, websiteFromHtml),
+            image: pickFirst(jsonLdProfile?.image, embeddedProfile?.image, imageFromMeta, imageFromHtml),
+            practiceAreas: jsonLdProfile?.practiceAreas?.length
+                ? jsonLdProfile.practiceAreas
+                : (embeddedProfile?.practiceAreas?.length ? embeddedProfile.practiceAreas : practiceAreas),
         };
     } catch (error) {
         log.debug(`Failed to fetch profile page ${profileUrl}: ${error.message}`);
@@ -757,6 +955,7 @@ async function enrichLawyersWithProfiles(lawyers, options) {
                     reviewCount: profileData.reviewCount ?? lawyer.reviewCount,
                     website: profileData.website || lawyer.website,
                     practiceAreas: profileData.practiceAreas?.length ? profileData.practiceAreas : lawyer.practiceAreas,
+                    image: profileData.image || lawyer.image,
                 };
             })
         );
