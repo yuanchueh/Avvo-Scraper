@@ -815,8 +815,12 @@ function extractLawyerFromElement($, $el, baseUrl) {
         }
 
         const imageEl = $el.find('img').first();
+        const headshotImgEl = $el.find('div.headshot img, .headshot img').first();
         const image = normalizeUrl(
-            imageEl.attr('src') || imageEl.attr('data-src') || '',
+            pickAttrValue(headshotImgEl.length > 0 ? headshotImgEl : imageEl, ['src', 'data-src']) ||
+            headshotImgEl.attr('src') ||
+            imageEl.attr('src') ||
+            imageEl.attr('data-src') || '',
             baseUrl
         );
 
@@ -944,7 +948,11 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
                 .first()
                 .attr('content')
         );
-        const ratingFromHtml = toNumber(
+
+        // Use specific CSS selector for rating from detail page
+        const reviewScoreLink = $('a.review-score').first();
+        const ratingFromReviewScore = toNumber(normalizeText(reviewScoreLink.text()));
+        const ratingFromHtml = ratingFromReviewScore || toNumber(
             normalizeText(
                 $('[data-testid="rating"], .avvo-rating, .rating-value, [class*="rating"]')
                     .first()
@@ -957,9 +965,13 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
                 .first()
                 .attr('content')
         );
-        const reviewCountFromHtml = toInt(
+
+        // Use specific CSS selector for review count from detail page
+        const reviewCountSpan = $('span.review-count').first();
+        const reviewCountFromSpan = toInt(normalizeText(reviewCountSpan.text()));
+        const reviewCountFromHtml = reviewCountFromSpan || toInt(
             normalizeText(
-                $('[data-testid="review-count"], .review-count, [class*="review-count"], [itemprop="reviewCount"]')
+                $('[data-testid="review-count"], [class*="review-count"], [itemprop="reviewCount"]')
                     .first()
                     .text()
             )
@@ -978,22 +990,36 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
             $('meta[property="og:image"], meta[name="twitter:image"], meta[itemprop="image"]').first().attr('content') || '',
             profileUrl
         );
+
+        // Use specific CSS selector for profile image from detail page
+        const headshotImg = $('div.headshot img').first();
         const imageFromHtml = normalizeUrl(
+            pickAttrValue(headshotImg, ['src', 'data-src', 'data-lazy-src']) ||
             pickAttrValue(
-                $('[data-testid="profile-photo"] img, .profile-photo img, .profile-header img, img[alt*="Attorney"], img[alt*="Lawyer"], img[itemprop="image"], img[class*="profile"], img[class*="avatar"]')
+                $('[data-testid="profile-photo"] img, .profile-photo img, .profile-header img, img[alt*="Attorney"], img[alt*="Lawyer"], img[itemprop="image"]')
                     .first(),
                 ['src', 'data-src', 'data-lazy-src']
             ),
             profileUrl
         );
 
+        // Use specific CSS selector for practice areas from detail page
         const practiceAreas = [];
-        $('[data-testid="practice-areas"], .practice-areas, .specialties')
-            .find('li, span, a')
-            .each((_, el) => {
+        const practiceAreaList = $('span.practice-area-list');
+        if (practiceAreaList.length > 0) {
+            practiceAreaList.find('a, span').each((_, el) => {
                 const value = normalizeText($(el).text());
                 if (value) practiceAreas.push(value);
             });
+        } else {
+            // Fallback to generic selectors
+            $('[data-testid="practice-areas"], .practice-areas, .specialties')
+                .find('li, span, a')
+                .each((_, el) => {
+                    const value = normalizeText($(el).text());
+                    if (value) practiceAreas.push(value);
+                });
+        }
 
         let reviews = [];
         if (includeReviews) {
