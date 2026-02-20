@@ -28,12 +28,19 @@
             "minimum": 1,
             "maximum": 200
         },
+        "includeReviews": {
+            "title": "Include Reviews",
+            "type": "boolean",
+            "description": "Fetch additional review-related details from profile pages. Enabling this will visit individual profile pages and may slow down runs.",
+            "default": false,
+            "prefill": false
+        },
         "includeContactInfo": {
             "title": "Include Contact Information",
             "type": "boolean",
-            "description": "Extract email addresses, phone numbers, and office addresses. Recommended for lead generation.",
-            "default": true,
-            "prefill": true
+            "description": "Fetch additional contact details from profile pages (email, phone, office address). Enabling this will visit individual profile pages and may slow down runs.",
+            "default": false,
+            "prefill": false
         },
         "proxyConfiguration": {
             "title": "Proxy Configuration",

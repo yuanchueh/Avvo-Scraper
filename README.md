@@ -58,7 +58,8 @@ Verify attorney credentials, bar admissions, and professional qualifications for
 | `startUrl` | String | Yes | `https://www.avvo.com/bankruptcy-debt-lawyer/al.html` | Direct Avvo directory URL to scrape from |
 | `maxLawyers` | Integer | No | `20` | Maximum lawyer profiles to extract (1-10000) |
 | `maxListingPages` | Integer | No | `10` | Maximum pages to crawl (each page ~5 lawyers) |
-| `includeContactInfo` | Boolean | No | `true` | Extract emails, phones, and office addresses |
+| `includeReviews` | Boolean | No | `false` | Fetch additional review-related details from profile pages (slower) |
+| `includeContactInfo` | Boolean | No | `false` | Fetch additional contact details from profile pages (email, phone, office address) (slower) |
 | `proxyConfiguration` | Object | No | `{useApifyProxy: true}` | Proxy settings for reliable scraping |
 
 ---
@@ -127,7 +128,8 @@ Extract 20 bankruptcy lawyers from Alabama:
 {
   "startUrl": "https://www.avvo.com/bankruptcy-debt-lawyer/al.html",
   "maxLawyers": 20,
-  "includeContactInfo": true,
+  "includeReviews": false,
+  "includeContactInfo": false,
   "proxyConfiguration": {
     "useApifyProxy": true
   }
@@ -143,6 +145,7 @@ Collect 100+ lawyers across multiple pages:
   "startUrl": "https://www.avvo.com/personal-injury-lawyer/ca.html",
   "maxLawyers": 100,
   "maxListingPages": 20,
+  "includeReviews": true,
   "includeContactInfo": true,
   "proxyConfiguration": {
     "useApifyProxy": true,

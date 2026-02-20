@@ -2,7 +2,8 @@
   "startUrl": "https://www.avvo.com/bankruptcy-debt-lawyer/al.html",
   "maxLawyers": 20,
   "maxListingPages": 10,
-  "includeContactInfo": true,
+  "includeReviews": false,
+  "includeContactInfo": false,
   "proxyConfiguration": {
     "useApifyProxy": true
   }

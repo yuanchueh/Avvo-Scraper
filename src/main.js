@@ -1202,16 +1202,17 @@ try {
     const input = await Actor.getInput() || {};
 
     const maxLawyers = input.maxLawyers ?? 20;
-    const maxConcurrency = 20; // Increased from 10 for better speed
-    const maxProfileConcurrency = 5;
+    const maxConcurrency = 10;
+    const maxProfileConcurrency = 10;
     const maxRequestsPerCrawl = 1000;
     const maxListingPages = input.maxListingPages ?? 200;
-    const minDelayMs = 500; // Increased for better stealth
-    const maxDelayMs = 2000; // Increased for more human-like behavior
+    const includeReviews = input.includeReviews ?? false;
+    const includeContactInfo = input.includeContactInfo ?? false;
+    const shouldEnrichProfiles = includeContactInfo || includeReviews;
+    const minDelayMs = shouldEnrichProfiles ? 300 : 0;
+    const maxDelayMs = shouldEnrichProfiles ? 1200 : 0;
     const useApiFirst = false;
     const useHtmlFallback = false;
-    const includeReviews = true; // Always include reviews
-    const includeContactInfo = input.includeContactInfo ?? true;
 
     // Validate startUrl is provided
     if (!input.startUrl?.trim() && (!Array.isArray(input.startUrls) || input.startUrls.length === 0)) {
@@ -1227,6 +1228,7 @@ try {
         startUrls: input.startUrls?.length || 0,
         maxLawyers,
         includeContactInfo,
+        includeReviews,
     });
 
     const startUrls = buildStartUrls(input);
@@ -1264,12 +1266,19 @@ try {
         proxyConfiguration,
         maxConcurrency,
         maxRequestsPerCrawl,
+        maxRequestRetries: 8,
         requestHandlerTimeoutSecs: 120,
         useSessionPool: true,
         sessionPoolOptions: {
             sessionOptions: {
                 maxErrorScore: 3,
             },
+        },
+        errorHandler: async ({ session }, error) => {
+            const message = String(error?.message || '');
+            if (/\b(403|429)\b/.test(message) || /blocked/i.test(message)) {
+                session?.markBad?.();
+            }
         },
         preNavigationHooks: [
             ({ session, request }, gotOptions) => {
@@ -1314,7 +1323,7 @@ try {
                     scrapedAt: new Date().toISOString(),
                 };
                 let profile = lawyer;
-                if (includeContactInfo || includeReviews) {
+                if (shouldEnrichProfiles) {
                     const enriched = await fetchLawyerProfile(request.url, {
                         proxyUrl: proxyInfo?.url,
                         userAgent: session.userData.userAgent,
@@ -1347,8 +1356,8 @@ try {
                     await handleLawyers(lawyers, {
                         maxLawyers,
                         seenProfileUrls,
-                        includeContactInfo: includeContactInfo,
-                        includeReviews: includeReviews,
+                        includeContactInfo,
+                        includeReviews,
                         proxyUrl: proxyInfo?.url,
                         userAgent: session.userData.userAgent,
                         maxProfileConcurrency,
