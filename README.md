@@ -1,69 +1,132 @@
 # Avvo Lawyers Scraper
 
-Extract comprehensive attorney profiles from Avvo with detailed practice areas, ratings, reviews, contact information, and professional credentials.
+Extract comprehensive attorney profiles from Avvo with ratings, reviews, practice areas, contact information, and professional credentials at scale.
 
 ---
 
 ## Overview
 
-The **Avvo Lawyers Scraper** extracts structured data from Avvo.com, the leading online legal directory platform. Access detailed attorney profiles including practice areas, client reviews, ratings, contact information, bar admissions, education, and professional experience.
+The **Avvo Lawyers Scraper** extracts detailed information from Avvo.com, the leading online legal directory. Collect attorney profiles including practice areas, client ratings, phone numbers, email addresses, bar admissions, education, and professional experience to build comprehensive legal databases.
 
 ### Key Benefits
 
-- **Legal Research** - Build comprehensive attorney databases for research and analysis
-- **Lead Generation** - Find qualified attorneys by practice area and location
-- **Market Intelligence** - Analyze legal services market trends and competition
-- **Directory Services** - Power legal directory platforms with fresh, accurate data
-- **Competitive Analysis** - Monitor attorney rankings and review trends
-- **Client Matching** - Connect clients with attorneys based on specialization
+- **Legal Research** — Build attorney databases for market analysis and competitive intelligence
+- **Lead Generation** — Find qualified attorneys by practice area and location  
+- **Directory Services** — Power legal directory platforms with fresh, real-time attorney data
+- **Credential Verification** — Verify bar admissions, licenses, and professional standing
+- **Market Intelligence** — Track attorney ratings, review trends, and service offerings
 
 ---
 
 ## Features
 
-### Data Extraction
-
-Extract complete attorney profiles with:
-
-- **Personal Information** - Attorney name and profile URL
-- **Professional Ratings** - Avvo rating (1-10 scale) and review count
-- **Practice Areas** - Specializations and areas of legal expertise
-- **Contact Details** - Phone numbers, email addresses, office locations
-- **Credentials** - Years licensed, bar admissions, education
-- **Languages** - Languages spoken for client communication
-- **Professional Bio** - Attorney background and experience
-- **Awards & Recognition** - Professional achievements and honors
-
-### Search Options
-
-Filter attorney searches by:
-
-- **Practice Area** - Bankruptcy, family law, criminal defense, personal injury, real estate, business law, immigration, employment, estate planning, traffic tickets, and more
-- **Location** - State-level or city-level targeting
-- **Custom URLs** - Direct Avvo directory URLs for precise searches
-
-### Performance
-
-- **Multiple Extraction Methods** - API-first HTTP, embedded JSON/JSON-LD, and HTML parsing with automatic fallback
-- **Cloudflare Bypass** - Proxy-aware HTTP with retries and session rotation
-- **Concurrent Processing** - Fast parallel scraping with configurable concurrency
-- **Smart Deduplication** - Automatic duplicate removal across pages
-- **Profile Enrichment** - Optional deep profile extraction from detail pages
+- **Complete Attorney Profiles** — Name, ratings, contact info, practice areas, education, and credentials
+- **Multiple Extraction Methods** — Reliable data extraction with automatic fallbacks
+- **Pagination Handling** — Automatically collects results across multiple pages
+- **Profile Enrichment** — Detailed enrichment from attorney profile pages
+- **Contact Information** — Phone numbers, emails, and office addresses
+- **Bar & License Data** — Years licensed, state bar admissions, certifications
+- **Language Support** — Languages spoken by each attorney
+- **Duplicate Removal** — Smart deduplication across pagination
 
 ---
 
-## Quick Start
+## Use Cases
 
-### Input Configuration
+### Legal Research & Market Analysis
+
+Analyze attorney demographics, practice area distribution, ratings, and geographic coverage for understanding the legal services market and competitive landscape.
+
+### Lead Generation for Legal Services
+
+Build targeted lists of attorneys by practice area and location for business development, partnerships, and referral networks.
+
+### Attorney Directory Development
+
+Power legal directory websites, attorney matching platforms, and client referral services with up-to-date data and profiles.
+
+### Compliance & Background Checks
+
+Verify attorney credentials, bar admissions, and professional qualifications for client vetting and compliance verification.
+
+---
+
+## Input Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `startUrl` | String | Yes | `https://www.avvo.com/bankruptcy-debt-lawyer/al.html` | Direct Avvo directory URL to scrape from |
+| `maxLawyers` | Integer | No | `20` | Maximum lawyer profiles to extract (1-10000) |
+| `maxListingPages` | Integer | No | `10` | Maximum pages to crawl (each page ~5 lawyers) |
+| `includeContactInfo` | Boolean | No | `true` | Extract emails, phones, and office addresses |
+| `proxyConfiguration` | Object | No | `{useApifyProxy: true}` | Proxy settings for reliable scraping |
+
+---
+
+## Output Data
+
+Each lawyer profile contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | String | Attorney full name |
+| `avvoRating` | Number | Avvo rating (1-10 scale) |
+| `clientRating` | Number | Client/user rating from reviews |
+| `reviewCount` | Integer | Number of client reviews |
+| `practiceAreas` | Array | Legal specializations and areas |
+| `location` | String | Office address (city, state, ZIP) |
+| `phone` | String | Contact phone number |
+| `email` | String | Contact email address |
+| `website` | String | Website URL |
+| `licenseYear` | Integer | Year licensed to practice |
+| `barAdmissions` | Array | State bars and court admissions |
+| `languages` | Array | Languages spoken |
+| `profileUrl` | String | Avvo profile URL |
+| `bio` | String | Professional biography |
+| `education` | Array | Law school and university education |
+| `awards` | Array | Professional recognition and honors |
+| `coordinates` | Object | Geographic coordinates (lat/lon) |
+| `scrapedAt` | String | ISO timestamp of extraction |
+
+---
+
+## Sample Output
 
 ```json
 {
-  "startUrls": [
-    { "url": "https://www.avvo.com/bankruptcy-debt-lawyer/al.html" }
-  ],
-  "city": "birmingham",
-  "maxLawyers": 50,
-  "includeReviews": true,
+  "name": "Ronald C. Sykstus",
+  "avvoRating": 10,
+  "clientRating": 5,
+  "reviewCount": 255,
+  "practiceAreas": ["Bankruptcy", "Debt Collection Defense", "Foreclosure Defense"],
+  "location": "Birmingham, AL 35203",
+  "phone": "(205) 555-0123",
+  "email": "contact@example.com",
+  "website": "https://www.example.com",
+  "licenseYear": 1988,
+  "barAdmissions": ["Alabama State Bar", "U.S. District Court"],
+  "languages": ["English", "Spanish"],
+  "profileUrl": "https://www.avvo.com/attorneys/12345-john-smith.html",
+  "bio": "Experienced bankruptcy attorney serving Birmingham and surrounding areas.",
+  "education": ["Harvard Law School, J.D., 2008"],
+  "awards": ["Super Lawyers Rising Star 2022", "Avvo Client's Choice 2023"],
+  "coordinates": {"lat": 33.5186, "lon": -86.8104},
+  "scrapedAt": "2026-02-20T10:30:00.000Z"
+}
+```
+
+---
+
+## Usage Examples
+
+### Basic Search (Bankruptcy Lawyers in Alabama)
+
+Extract 20 bankruptcy lawyers from Alabama:
+
+```json
+{
+  "startUrl": "https://www.avvo.com/bankruptcy-debt-lawyer/al.html",
+  "maxLawyers": 20,
   "includeContactInfo": true,
   "proxyConfiguration": {
     "useApifyProxy": true
@@ -71,493 +134,174 @@ Filter attorney searches by:
 }
 ```
 
-### Run on Apify Platform
+### Large Scale Collection
 
-1. Open the Actor in Apify Console
-2. Configure your search parameters (practice area, state, optional city)
-3. Set maximum lawyers to scrape
-4. Enable profile enrichment options if needed
-5. Click "Start" and wait for results
-6. Download data in JSON, CSV, Excel, or other formats
-
----
-
-## Input Parameters
-
-<table>
-<thead>
-<tr>
-<th>Parameter</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-
-<tr>
-<td><code>startUrls</code></td>
-<td>Array</td>
-<td>? No</td>
-<td>List of Avvo directory URLs to scrape. If provided, practiceArea/state are ignored.</td>
-</tr>
-
-<tr>
-<td><code>startUrl</code></td>
-<td>String</td>
-<td>❌ No</td>
-<td>Direct Avvo directory URL (e.g., https://www.avvo.com/bankruptcy-debt-lawyer/al.html). If provided, practiceArea and state are ignored.</td>
-</tr>
-
-<tr>
-<td><code>practiceArea</code></td>
-<td>String</td>
-<td>⚠️ Conditional</td>
-<td>Practice area slug (e.g., bankruptcy-debt, family, criminal-defense, personal-injury). Required if startUrl not provided.</td>
-</tr>
-
-<tr>
-<td><code>state</code></td>
-<td>String</td>
-<td>⚠️ Conditional</td>
-<td>Two-letter US state code (e.g., al, ca, ny, tx, fl). Required if startUrl not provided.</td>
-</tr>
-
-<tr>
-<td><code>city</code></td>
-<td>String</td>
-<td>❌ No</td>
-<td>Optional city name to narrow search within state (e.g., birmingham, montgomery)</td>
-</tr>
-
-<tr>
-<td><code>maxLawyers</code></td>
-<td>Integer</td>
-<td>❌ No</td>
-<td>Maximum number of profiles to scrape (default: 50, 0 = unlimited)</td>
-</tr>
-<tr>
-<td><code>includeReviews</code></td>
-<td>Boolean</td>
-<td>❌ No</td>
-<td>Extract client reviews and detailed ratings (default: true)</td>
-</tr>
-
-<tr>
-<td><code>includeContactInfo</code></td>
-<td>Boolean</td>
-<td>❌ No</td>
-<td>Fetch additional contact details from profile pages (default: true)</td>
-</tr>
-<tr>
-<td><code>debugHtml</code></td>
-<td>Boolean</td>
-<td>? No</td>
-<td>Save debug HTML when extraction fails or blocks occur (default: false)</td>
-</tr>
-
-<tr>
-<td><code>proxyConfiguration</code></td>
-<td>Object</td>
-<td>❌ No</td>
-<td>Proxy settings for bypassing protection (recommended: useApifyProxy: true)</td>
-</tr>
-
-</tbody>
-</table>
-
----
-
-## Output Data
-
-Each lawyer profile includes:
+Collect 100+ lawyers across multiple pages:
 
 ```json
 {
-  "name": "John Smith",
-  "rating": 9.5,
-  "reviewCount": 47,
-  "practiceAreas": ["Bankruptcy", "Debt Collection Defense", "Foreclosure Defense"],
-  "location": "Birmingham, AL 35203",
-  "phone": "(205) 555-0123",
-  "email": "contact@example.com",
-  "website": "https://www.example.com",
-  "yearsLicensed": 15,
-  "barAdmissions": ["Alabama State Bar", "U.S. District Court"],
-  "languages": ["English", "Spanish"],
-  "profileUrl": "https://www.avvo.com/attorneys/12345-john-smith.html",
-  "bio": "Experienced bankruptcy attorney serving Birmingham and surrounding areas...",
-  "education": ["Harvard Law School, J.D., 2008", "Yale University, B.A., 2005"],
-  "awards": ["Super Lawyers Rising Star 2022", "Avvo Client's Choice 2023"],
-  "reviews": [],
-  "scrapedAt": "2026-01-02T10:30:00.000Z"
+  "startUrl": "https://www.avvo.com/personal-injury-lawyer/ca.html",
+  "maxLawyers": 100,
+  "maxListingPages": 20,
+  "includeContactInfo": true,
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"]
+  }
 }
-``` 
-
-### Field Descriptions
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | String | Attorney full name |
-| `rating` | Number | Avvo rating (1-10 scale) |
-| `reviewCount` | Integer | Number of client reviews |
-| `practiceAreas` | Array | Legal specializations |
-| `location` | String | Office address (city, state, ZIP) |
-| `phone` | String | Contact phone number |
-| `email` | String | Contact email address |
-| `website` | String | Attorney or firm website URL |
-| `yearsLicensed` | Integer | Years practicing law |
-| `barAdmissions` | Array | State bar and court admissions |
-| `languages` | Array | Languages spoken |
-| `profileUrl` | String | Avvo profile URL |
-| `bio` | String | Professional biography |
-| `education` | Array | Law school and undergraduate education |
-| `awards` | Array | Professional recognition and awards |
-| `reviews` | Array | Review objects or snippets when available |
-| `scrapedAt` | String | ISO timestamp of data extraction |
-
----
-
-## Export Formats
-
-Download scraped data in multiple formats:
-
-- **JSON** - Structured data for applications and APIs
-- **CSV** - Spreadsheet-compatible format for Excel/Google Sheets
-- **Excel** - Native .xlsx format with proper formatting
-- **XML** - Enterprise system integration
-- **RSS** - Feed-based updates
-- **HTML** - Web-ready formatted output
-
----
-
-## Use Cases
-
-### Legal Research & Analytics
-
-Analyze attorney demographics, practice area distribution, rating trends, and geographic coverage for market research and competitive intelligence.
-
-### Lead Generation
-
-Build targeted lists of attorneys by practice area and location for business development, referral networks, and partnership opportunities.
-
-### Directory & Platform Development
-
-Power legal directory websites, attorney matching platforms, and client referral services with comprehensive, up-to-date attorney data.
-
-### Compliance & Background Checks
-
-Verify attorney credentials, bar admissions, and professional standing for client vetting and compliance purposes.
-
-### Marketing & Business Intelligence
-
-Track attorney ratings, review trends, and service offerings to inform marketing strategies and identify market opportunities.
-
----
-
-## Technical Architecture
-
-### Multi-Strategy Extraction
-
-The scraper employs an API-first HTTP pipeline with layered fallbacks:
-
-#### 1. JSON API (Primary Method)
-
-Direct HTTP calls to internal JSON endpoints when available (user-supplied or discovered). Fastest and most reliable when present.
-
-**Advantages:**
-- Structured JSON output
-- No rendering overhead
-- High accuracy and speed
-
-#### 2. Embedded JSON + JSON-LD (Secondary Method)
-
-Parses embedded JSON blobs (e.g., `__NEXT_DATA__`, inline JSON) and JSON-LD markup from HTML.
-
-**Advantages:**
-- Structured data without browsers
-- Resilient to minor markup changes
-
-#### 3. HTML Parsing with Cheerio (Fallback Method)
-
-Uses selector-based parsing on HTTP-fetched HTML when JSON is not available.
-
-**Advantages:**
-- Works on any page structure
-- Multiple selector strategies
-- Robust against site changes
-
-
-### Cloudflare Bypass Strategy
-
-This Actor relies on proxy-aware HTTP, session rotation, and exponential backoff to reduce blocks. For best results, use residential proxies and keep concurrency reasonable.
-
-### Performance Optimizations
-
-| Optimization | Impact | Implementation |
-|--------------|--------|----------------|
-| API-First HTTP | 10-50x faster | Direct JSON endpoint calls |
-| Embedded JSON/JSON-LD | 5-20x faster | HTML JSON parsing |
-| Concurrent Requests | 3-5x faster | Parallel processing |
-| Profile Enrichment | Detailed data | Batch HTTP requests |
-
-### Quality Assurance
-
-- **Input Validation** - All input parameters validated before execution
-- **Duplicate Detection** - URL-based deduplication across pagination
-- **Error Handling** - Graceful fallbacks for failed requests
-- **Data Cleaning** - Whitespace trimming and text normalization
-- **Logging** - Comprehensive logging with sensitive data censoring
-- **Debug Mode** - Automatic HTML capture when extraction fails
-
----
-
-## Configuration Tips
-
-### Maximizing Results
-
-- Use specific practice areas for targeted results
-- Enable `includeContactInfo` for complete profiles
-- Set reasonable `maxLawyers` limits for faster runs
-- Use Apify Proxy (residential) for best reliability
-- Allow sufficient time for profile enrichment
-
-### Performance Tuning
-
-- **Small Runs** (<50 lawyers): ~2-3 minutes
-- **Medium Runs** (50-200 lawyers): ~5-10 minutes
-- **Large Runs** (200+ lawyers): ~15-30 minutes
-
-Execution time increases when `includeContactInfo` is enabled due to individual profile page fetching.
-
-### Practice Area Slugs
-
-Common practice area slugs for search:
-
-- `bankruptcy-debt` - Bankruptcy and debt relief
-- `family` - Family law and divorce
-- `criminal-defense` - Criminal defense
-- `personal-injury` - Personal injury and accidents
-- `real-estate` - Real estate law
-- `business` - Business and corporate law
-- `immigration` - Immigration law
-- `employment` - Employment and labor law
-- `estate-planning` - Estate planning and probate
-- `traffic-tickets` - Traffic violations
-
----
-
-## API Integration
-
-### Node.js Example
-
-```javascript
-import { ApifyClient } from 'apify-client';
-
-const client = new ApifyClient({ token: 'YOUR_API_TOKEN' });
-
-const run = await client.actor('YOUR_ACTOR_ID').call({
-    practiceArea: 'bankruptcy-debt',
-    state: 'al',
-    city: 'birmingham',
-    maxLawyers: 100,
-    includeContactInfo: true
-});
-
-const { items } = await client.dataset(run.defaultDatasetId).listItems();
-console.log(`Scraped ${items.length} lawyers`);
 ```
 
-### Python Example
+### Fast Testing (Minimal Data)
 
-```python
-from apify_client import ApifyClient
+Quick run with minimal result count:
 
-client = ApifyClient('YOUR_API_TOKEN')
-
-run = client.actor('YOUR_ACTOR_ID').call(run_input={
-    'practiceArea': 'family',
-    'state': 'ca',
-    'city': 'los-angeles',
-    'maxLawyers': 50
-})
-
-items = client.dataset(run['defaultDatasetId']).list_items().items
-print(f"Scraped {len(items)} lawyers")
+```json
+{
+  "startUrl": "https://www.avvo.com/family-lawyer/ny.html",
+  "maxLawyers": 10,
+  "maxListingPages": 2,
+  "includeContactInfo": false
+}
 ```
 
-### cURL Example
+---
 
-```bash
-curl -X POST https://api.apify.com/v2/acts/YOUR_ACTOR_ID/runs \
-  -H "Authorization: Bearer YOUR_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "practiceArea": "criminal-defense",
-    "state": "ny",
-    "maxLawyers": 75
-  }'
-```
+## Tips for Best Results
+
+### Choose Working URLs
+
+- Use Avvo directory URLs in the format: `https://www.avvo.com/[practice-area]/[state-code].html`
+- Practice areas: `bankruptcy-debt`, `family`, `criminal-defense`, `personal-injury`, `real-estate`, `business`, etc.
+- US state codes: `al`, `ca`, `ny`, `tx`, `fl`, etc.
+
+### Optimize Collection Size
+
+- Start with `maxLawyers: 20-50` to test quickly
+- Increase for production runs to `100+`
+- Typical page contains ~5 lawyers per page
+
+### Enable Proxies for Reliability
+
+- Always enable Apify Proxy for best results
+- Residential proxies recommended for large-scale scraping
+- Helps bypass rate limiting and access restrictions
+
+### Performance Expectations
+
+- **Small runs** (10-20 lawyers): ~1-2 minutes
+- **Medium runs** (50-100 lawyers): ~3-5 minutes  
+- **Large runs** (200+ lawyers): ~10-20 minutes
 
 ---
 
 ## Scheduling & Automation
 
-### Automated Data Collection
+### Automated Updates
 
-Set up scheduled runs to maintain fresh attorney data:
+Set up recurring scrapes to maintain fresh attorney data:
 
-1. Navigate to **Schedules** in Apify Console
-2. Create new schedule (daily, weekly, custom cron)
-3. Configure input parameters
-4. Enable notifications for run completion
-5. Set up webhooks for automated data processing
+1. Open the Actor in Apify Console
+2. Navigate to **Schedules**
+3. Create daily or weekly schedule
+4. Configure your search parameters
+5. Enable email or Slack notifications
 
 ### Integration Options
 
-- **Webhooks** - Trigger actions on completion
-- **Zapier** - Connect to 5000+ apps without coding
-- **Make** (Integromat) - Build complex automation workflows
-- **Google Sheets** - Auto-export to spreadsheets
-- **Slack/Discord** - Receive notifications with results
-- **Email** - Automated reports via email
+- **Webhooks** — Trigger actions when run completes
+- **Zapier/Make** — Automate workflows without coding
+- **Google Sheets** — Auto-export results to spreadsheets
+- **Slack/Discord** — Receive notifications with summaries
+- **Custom API** — Integrate via HTTP requests
+
+---
+
+## Export Formats
+
+Download your data in multiple formats:
+
+- **JSON** — Structured format for applications and APIs
+- **CSV** — Spreadsheet format for Excel/Google Sheets
+- **Excel** — Native .xlsx with formatting
+- **XML** — Enterprise system integration
+- **HTML** — Ready-to-publish web format
+
+---
+
+## Frequently Asked Questions
+
+### How many lawyers can I scrape?
+
+You can collect all available lawyers by increasing `maxLawyers` (0 = unlimited). However, very large runs may take considerable time. Start with reasonable limits like 50-100 for testing.
+
+### Do I need to use proxies?
+
+Proxies are highly recommended for reliability. Avvo has anti-bot protection, and residential proxies provide the best success rate. Apify Proxy is included with your account.
+
+### What practice areas are supported?
+
+All practice areas available on Avvo are supported. Use the practice area slug from Avvo's URL structure (e.g., `bankruptcy-debt`, `personal-injury`, `criminal-defense`).
+
+### How often is the data updated?
+
+Data is extracted in real-time during each run, ensuring you always get the most current attorney information available.
+
+### What if some fields are missing?
+
+Not all attorneys provide complete information on Avvo. Missing fields will be returned as null or empty values. This is normal.
+
+### Can I export to Google Sheets?
+
+Yes, use Apify's native Google Sheets integration or download CSV and import manually into your spreadsheet.
+
+### How long do runs typically take?
+
+- 20 lawyers: ~1 minute
+- 50 lawyers: ~2-3 minutes
+- 100 lawyers: ~5-10 minutes
 
 ---
 
 ## Compliance & Ethics
 
-### Responsible Data Collection
+### Responsible Use
 
-This scraper extracts publicly available attorney information from Avvo's directory for legitimate business purposes including:
-
-- Legal research and market analysis
-- Attorney credential verification
-- Directory and platform development
-- Lead generation for legal services
+This scraper extracts publicly available attorney information from Avvo's directory for legitimate business purposes including research, analysis, and directory development.
 
 ### Best Practices
 
-- Use scraped data in accordance with applicable laws and regulations
+- Use data in accordance with applicable laws and regulations
 - Respect attorney privacy and professional information
-- Implement rate limiting and respectful scraping practices
-- Use proxies to avoid server overload
-- Do not scrape for spamming or harassment purposes
+- Implement reasonable rate limiting
+- Use proxies responsibly
+- Do not scrape for spamming, harassment, or illegal purposes
 - Comply with data protection regulations (GDPR, CCPA, etc.)
 
 ---
 
-## Troubleshooting
-
-### No Lawyers Found
-
-**Possible causes:**
-- Invalid practice area slug or state code
-- Cloudflare blocking (enable residential proxies)
-- No lawyers match search criteria
-- Page structure changed (check DEBUG_PAGE_HTML output)
-
-**Solutions:**
-- Verify practice area slug matches Avvo's URL format
-- Use Apify residential proxies for better reliability
-- Try different practice areas or locations
-- Enable `debugHtml` to inspect blocked pages
-- Check Actor logs for specific error messages
-
-### Incomplete Data
-
-**Possible causes:**
-- `includeContactInfo` disabled
-- Profile pages blocked by Cloudflare
-- Missing data on source profiles
-
-**Solutions:**
-- Enable `includeContactInfo` for complete profiles
-- Use residential proxies for detail page fetching
-- Some attorneys may not provide all information publicly
-
-### Slow Performance
-
-**Possible causes:**
-- Large maxLawyers value
-- Profile enrichment enabled
-- Network latency
-
-**Solutions:**
-- Reduce maxLawyers for faster runs
-- Disable `includeContactInfo` for listing-only data
-- Use faster proxy groups if available
-
----
-
-## FAQ
-
-<details>
-<summary><strong>How many lawyers can I scrape?</strong></summary>
-<p>You can scrape unlimited lawyers by setting <code>maxLawyers</code> to 0. However, very large runs may take considerable time. We recommend setting reasonable limits for optimal performance.</p>
-</details>
-
-<details>
-<summary><strong>Do I need proxies?</strong></summary>
-<p>Yes, proxies are highly recommended. Avvo uses Cloudflare protection, and residential proxies provide the best success rate for bypassing these protections.</p>
-</details>
-
-<details>
-<summary><strong>What practice areas are supported?</strong></summary>
-<p>All practice areas available on Avvo are supported. Use the practice area slug from Avvo's URL (e.g., "bankruptcy-debt", "family", "criminal-defense").</p>
-</details>
-
-<details>
-<summary><strong>Can I scrape specific cities?</strong></summary>
-<p>Yes, use the <code>city</code> parameter to narrow results within a state. Leave empty to scrape the entire state.</p>
-</details>
-
-<details>
-<summary><strong>How fresh is the data?</strong></summary>
-<p>Data is extracted in real-time from Avvo during each run, ensuring the most up-to-date attorney information available.</p>
-</details>
-
-<details>
-<summary><strong>What if an attorney doesn't have all fields?</strong></summary>
-<p>Not all attorneys provide complete information on their profiles. Missing fields will be returned as empty strings, null, or empty arrays depending on the field type.</p>
-</details>
-
-<details>
-<summary><strong>Can I scrape reviews and ratings?</strong></summary>
-<p>Yes, the scraper extracts Avvo ratings and review counts. For detailed review text, enable <code>includeReviews</code> and <code>includeContactInfo</code>.</p>
-</details>
-
----
-
-## Support
+## Support & Resources
 
 ### Need Help?
 
 - **Documentation**: [Apify Docs](https://docs.apify.com)
 - **Community**: [Discord Server](https://discord.com/invite/jyEM2PRvMU)
-- **Issues**: Report bugs via Actor feedback form
-- **Contact**: Reach out through Apify Console messaging
+- **Issues**: Report problems via Actor feedback form
+- **Contact**: Message through Apify Console
 
-### Rate This Actor
+### Additional Resources
 
-If you find this scraper valuable for your legal research or business needs, please leave a rating and review on the Apify platform!
-
----
-
-## License
-
-This Actor is licensed under the Apache License 2.0. See the LICENSE file for details.
+- [API Reference](https://docs.apify.com/api/v2)
+- [Scheduling Runs](https://docs.apify.com/schedules)
+- [Data Export Guide](https://docs.apify.com/storage/dataset)
 
 ---
 
-## Keywords
+## Legal Notice
 
-avvo scraper, lawyer scraper, attorney directory, legal data extraction, lawyer profiles, attorney search, legal services, law firm data, bar admissions, practice areas, attorney ratings, legal directory scraper, lawyer database, attorney leads
+This actor extracts publicly available information from Avvo.com for legitimate data collection purposes. Users are responsible for ensuring compliance with website terms of service, applicable laws, and data protection regulations. Use extracted data responsibly and respect all legal requirements.
 
 ---
 
-**Built for the Apify community** | [Get Started Now](https://console.apify.com) | [Documentation](https://docs.apify.com) | [Join Discord](https://discord.com/invite/jyEM2PRvMU)
+**Keywords** — avvo scraper, lawyer scraper, attorney directory, legal data, attorney leads, bar directory, practice areas, lawyer profiles, legal services
 
-
-
-
-
+---

@@ -13,16 +13,27 @@
         "maxLawyers": {
             "title": "Maximum Lawyers",
             "type": "integer",
-            "description": "Maximum number of lawyer profiles to scrape (0 = unlimited). Default is 50 for optimal performance.",
-            "default": 50,
-            "minimum": 0,
+            "description": "Maximum number of lawyer profiles to scrape. Default is 20 for faster testing; increase for production runs.",
+            "default": 20,
+            "prefill": 20,
+            "minimum": 1,
             "maximum": 10000
+        },
+        "maxListingPages": {
+            "title": "Maximum Listing Pages",
+            "type": "integer",
+            "description": "Maximum number of listing pages to crawl (e.g., 10 pages × 5 lawyers/page = 50 total results).",
+            "default": 10,
+            "prefill": 10,
+            "minimum": 1,
+            "maximum": 200
         },
         "includeContactInfo": {
             "title": "Include Contact Information",
             "type": "boolean",
             "description": "Extract email addresses, phone numbers, and office addresses. Recommended for lead generation.",
-            "default": true
+            "default": true,
+            "prefill": true
         },
         "proxyConfiguration": {
             "title": "Proxy Configuration",
@@ -30,6 +41,9 @@
             "description": "Proxy settings for bypassing anti-bot protection. Highly recommended for reliable scraping.",
             "editor": "proxy",
             "default": {
+                "useApifyProxy": true
+            },
+            "prefill": {
                 "useApifyProxy": true
             }
         }

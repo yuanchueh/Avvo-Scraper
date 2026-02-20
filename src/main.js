@@ -35,12 +35,66 @@ function randomBetween(min, max) {
 
 function normalizeText(value) {
     if (!value) return '';
-    return String(value).replace(/\s+/g, ' ').trim();
+    const text = String(value).replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    if (/^(not\s+available|n\/?a|none)$/i.test(text)) return '';
+    return text;
 }
 
 function normalizeObjectText(value) {
     if (!value || typeof value !== 'object') return '';
     return normalizeText(value.value || value.text || '');
+}
+
+function pickSchemaName(value) {
+    if (!value) return '';
+    if (typeof value === 'string') return normalizeText(value);
+    if (typeof value === 'object') return normalizeText(value.name || value.title || value.description);
+    return '';
+}
+
+function extractYear(value) {
+    const match = String(value || '').match(/\b(19\d{2}|20\d{2})\b/);
+    return match ? parseInt(match[1], 10) : null;
+}
+
+function extractLicenseFromCredentials(credentials) {
+    const items = normalizeArray(credentials).filter((c) => c && typeof c === 'object');
+
+    const years = items
+        .map((c) => extractYear(c.dateCreated || c.validFrom || c.startDate || c.dateIssued))
+        .filter((y) => Number.isInteger(y));
+
+    const licenseYear = years.length > 0 ? Math.min(...years) : null;
+
+    const barAdmissions = [];
+    const licenseStates = [];
+
+    for (const c of items) {
+        const credentialName = normalizeText(c.name);
+        if (credentialName) {
+            barAdmissions.push(credentialName);
+            const stateMatch = credentialName.match(/\b([A-Z]{2})\b/);
+            if (stateMatch) licenseStates.push(stateMatch[1]);
+        }
+
+        const recognizedBy = c.recognizedBy;
+        const recognizedName = pickSchemaName(recognizedBy);
+        if (recognizedName) barAdmissions.push(recognizedName);
+
+        const area = c.jurisdiction || c.areaServed || c.state;
+        const areaName = pickSchemaName(area);
+        if (areaName) licenseStates.push(areaName);
+    }
+
+    return {
+        licenseYear,
+        barAdmissions: [...new Set(barAdmissions)].filter(Boolean),
+        licenseStates: [...new Set(licenseStates)].filter(Boolean),
+        certifications: items
+            .map((c) => normalizeText(c.credentialCategory || c.category || c.name))
+            .filter(Boolean),
+    };
 }
 
 function normalizeUrl(value, baseUrl) {
@@ -299,8 +353,13 @@ function normalizeLawyer(raw, baseUrl) {
     if (!raw || typeof raw !== 'object') return null;
 
     const name = normalizeText(pickFirst(raw.name, raw.fullName, raw.displayName, raw.title));
-    const profileUrl = normalizeUrl(pickFirst(raw.profileUrl, raw.profile_url, raw.url, raw.link), baseUrl);
-    const address = raw.address || {};
+    const profileUrl = normalizeUrl(
+        pickFirst(raw.profileUrl, raw.profile_url, raw.url, raw.link, raw['@id']),
+        baseUrl
+    );
+
+    const worksFor = raw.worksFor && typeof raw.worksFor === 'object' ? raw.worksFor : {};
+    const address = pickFirst(raw.address, worksFor.address) || {};
 
     let location = '';
     if (typeof address === 'string') {
@@ -329,7 +388,7 @@ function normalizeLawyer(raw, baseUrl) {
             raw.practiceArea,
             raw.tags,
             raw.knowsAbout,
-            raw.areaServed
+            raw.serviceType
         )
     ).map(normalizeText).filter(Boolean);
 
@@ -343,6 +402,8 @@ function normalizeLawyer(raw, baseUrl) {
         baseUrl
     );
 
+    const worksForImage = normalizeImage(pickFirst(worksFor.image, worksFor.logo, worksFor.photo), baseUrl);
+
     const contactInfo = raw.contactInfo || raw.contact || {};
     const contactWebsite = contactInfo.website || contactInfo.url || contactInfo.site;
 
@@ -350,7 +411,7 @@ function normalizeLawyer(raw, baseUrl) {
     const externalSameAs = sameAs.find((item) => typeof item === 'string' && !item.includes('avvo.com'));
 
     // Extract coordinates from geo field
-    const geo = raw.geo || {};
+    const geo = pickFirst(raw.geo, worksFor.geo) || {};
     const latitude = toNumber(geo.latitude || geo.lat);
     const longitude = toNumber(geo.longitude || geo.lng || geo.lon);
 
@@ -369,7 +430,7 @@ function normalizeLawyer(raw, baseUrl) {
         .filter(Boolean);
 
     // Extract awards
-    const awardsList = normalizeArray(pickFirst(raw.award, raw.awards, raw.honors));
+    const awardsList = normalizeArray(pickFirst(raw.award, raw.awards, raw.honors, worksFor.award));
     const processedAwards = awardsList
         .map((item) => {
             if (typeof item === 'string') return normalizeText(item);
@@ -380,29 +441,25 @@ function normalizeLawyer(raw, baseUrl) {
         })
         .filter(Boolean);
 
-    // Extract license states/jurisdictions
-    const memberOf = normalizeArray(raw.memberOf || raw.jurisdiction);
-    const licenseStates = memberOf
+    // Extract license states vs. bar admissions / memberships
+    const memberOf = normalizeArray(pickFirst(raw.memberOf, raw.jurisdiction, worksFor.memberOf));
+    const memberships = memberOf
         .map((item) => {
             if (typeof item === 'string') return normalizeText(item);
-            if (item && typeof item === 'object') {
-                return normalizeText(item.name || item.state || item.jurisdiction);
-            }
+            if (item && typeof item === 'object') return normalizeText(item.name || item.state || item.jurisdiction);
             return null;
         })
         .filter(Boolean);
 
+    const areaServedName = pickSchemaName(raw.areaServed);
+    const addressRegion = typeof address === 'object' && address
+        ? normalizeText(address.addressRegion || worksFor.address?.addressRegion)
+        : '';
+
     // Extract certifications
-    const credentials = normalizeArray(raw.hasCredential || raw.credentials || raw.certifications);
-    const certificationsList = credentials
-        .map((item) => {
-            if (typeof item === 'string') return normalizeText(item);
-            if (item && typeof item === 'object') {
-                return normalizeText(item.name || item.title || item.credential);
-            }
-            return null;
-        })
-        .filter(Boolean);
+    const credentialExtraction = extractLicenseFromCredentials(
+        pickFirst(raw.hasCredential, raw.credentials, raw.certifications, worksFor.hasCredential)
+    );
 
     // Separate Avvo rating (0-10 scale) from client rating (aggregateRating)
     const avvoRating = toNumber(pickFirst(raw.avvoRating, raw.avvo_rating));
@@ -428,24 +485,47 @@ function normalizeLawyer(raw, baseUrl) {
         practiceAreas,
         location,
         phone: normalizeText(
-            pickFirst(raw.phone, raw.phoneNumber, raw.telephone, contactPhone, contactInfo.phone)
+            pickFirst(
+                raw.phone,
+                raw.phoneNumber,
+                raw.telephone,
+                worksFor.telephone,
+                contactPhone,
+                contactInfo.phone
+            )
         ),
         email: normalizeText(pickFirst(raw.email, contactEmail, contactInfo.email)),
         website: normalizeExternalWebsite(
-            pickFirst(raw.website, raw.websiteUrl, contactWebsite, externalSameAs),
+            pickFirst(raw.website, raw.websiteUrl, worksFor.url, contactWebsite, externalSameAs),
             baseUrl
         ),
-        licenseYear: null, // Will be set from HTML parsing
-        licenseStates,
-        barAdmissions: normalizeArray(raw.barAdmissions).map(normalizeText).filter(Boolean),
-        languages: normalizeArray(pickFirst(raw.languages, raw.language)).map(normalizeText).filter(Boolean),
+        licenseYear: credentialExtraction.licenseYear,
+        licenseStates: [...new Set([
+            ...(credentialExtraction.licenseStates || []),
+            ...(areaServedName ? [areaServedName] : []),
+            ...(addressRegion ? [addressRegion] : []),
+        ])].filter(Boolean),
+        barAdmissions: [...new Set([
+            ...normalizeArray(raw.barAdmissions).map(normalizeText).filter(Boolean),
+            ...(credentialExtraction.barAdmissions || []),
+            ...memberships,
+        ])].filter(Boolean),
+        languages: normalizeArray(pickFirst(raw.languages, raw.language, raw.knowsLanguage, worksFor.knowsLanguage))
+            .map((item) => {
+                if (typeof item === 'string') return normalizeText(item);
+                if (item && typeof item === 'object') {
+                    return normalizeText(item.name || item.value || item.text || item.language);
+                }
+                return null;
+            })
+            .filter(Boolean),
         profileUrl,
         bio: normalizeText(pickFirst(raw.bio, raw.biography, raw.summary, raw.about, raw.description)),
         education: combinedEducation,
         awards: processedAwards,
-        certifications: certificationsList,
-        reviews: normalizeArray(raw.reviews),
-        image,
+        certifications: credentialExtraction.certifications,
+        reviews: normalizeArray(pickFirst(raw.review, raw.reviews)),
+        image: pickFirst(image, worksForImage),
         coordinates: latitude && longitude ? { latitude, longitude } : null,
         scrapedAt: new Date().toISOString(),
     };
@@ -477,7 +557,7 @@ function addJsonLdLawyer(data, lawyers, baseUrl) {
         return;
     }
     const type = data['@type'];
-    if (type === 'Attorney' || type === 'Person' || type === 'LegalService') {
+    if (type === 'Attorney' || type === 'Person' || type === 'LegalService' || type === 'LocalBusiness') {
         const normalized = normalizeLawyer(data, baseUrl);
         if (normalized) lawyers.push(normalized);
     }
@@ -503,6 +583,9 @@ function extractNextPageUrlFromHtml($, baseUrl) {
     const nextHref = $('a[rel="next"], link[rel="next"]').attr('href');
     if (nextHref) return normalizeUrl(nextHref, baseUrl);
 
+    const nextClassHref = $('.next a, a.next').first().attr('href');
+    if (nextClassHref) return normalizeUrl(nextClassHref, baseUrl);
+
     const nextButton = $('a[class*="next"], .pagination a').filter((_, el) => {
         const text = normalizeText($(el).text()).toLowerCase();
         return text === 'next' || text === 'next page';
@@ -510,6 +593,36 @@ function extractNextPageUrlFromHtml($, baseUrl) {
 
     const href = nextButton.attr('href');
     return href ? normalizeUrl(href, baseUrl) : '';
+}
+
+function extractNextPageUrlFromRawHtml(html, baseUrl) {
+    if (!html) return '';
+
+    // <a rel="next" href="/path?page=2">
+    const anchorMatch = html.match(/<a[^>]*\brel\s*=\s*"next"[^>]*\bhref\s*=\s*"([^"]+)"/i);
+    if (anchorMatch?.[1]) return normalizeUrl(anchorMatch[1], baseUrl);
+
+    // <link rel="next" href="/path?page=2">
+    const linkMatch = html.match(/<link[^>]*\brel\s*=\s*"next"[^>]*\bhref\s*=\s*"([^"]+)"/i);
+    if (linkMatch?.[1]) return normalizeUrl(linkMatch[1], baseUrl);
+
+    // .next a href
+    const nextClassMatch = html.match(/class\s*=\s*"[^"]*\bnext\b[^"]*"[^>]*>\s*<a[^>]*href\s*=\s*"([^"]+)"/i);
+    if (nextClassMatch?.[1]) return normalizeUrl(nextClassMatch[1], baseUrl);
+
+    return '';
+}
+
+function buildNextPageUrlByIncrement(currentUrl) {
+    try {
+        const url = new URL(currentUrl);
+        const currentPage = parseInt(url.searchParams.get('page') || '1', 10);
+        const nextPage = Number.isFinite(currentPage) && currentPage > 0 ? currentPage + 1 : 2;
+        url.searchParams.set('page', String(nextPage));
+        return url.toString();
+    } catch {
+        return '';
+    }
 }
 
 function extractNextPageUrlFromApi(json, baseUrl) {
@@ -854,12 +967,13 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
             headers: {
                 ...DEFAULT_HEADERS,
                 'User-Agent': userAgent,
+                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Sec-Fetch-Dest': 'document',
                 'Sec-Fetch-Mode': 'navigate',
                 'Sec-Fetch-Site': 'same-origin',
             },
             proxyUrl,
-            timeout: { request: 20000 },
+            timeout: { request: 30000 },
             retry: { limit: 0 },
             throwHttpErrors: false,
         });
@@ -877,215 +991,29 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         }
 
         const $ = cheerio.load(html);
-        const embeddedPayloads = extractEmbeddedJson(html);
-        const embeddedCandidates = [];
-        embeddedPayloads.forEach((payload) => {
-            embeddedCandidates.push(...extractLawyersFromApiJson(payload, profileUrl));
-        });
-        const embeddedProfile = pickBestProfile(embeddedCandidates, profileUrl);
 
         const jsonLdProfiles = extractLawyersFromJsonLd(html, profileUrl);
         const jsonLdProfile = pickBestProfile(jsonLdProfiles, profileUrl);
 
-        const metaDescription = normalizeText(
-            $('meta[name="description"], meta[property="og:description"]').first().attr('content')
+        if (!jsonLdProfile) return null;
+
+        const avvoRatingText = normalizeText($('.avvo-rating-count').first().text());
+        const avvoRatingMatch = avvoRatingText.match(/(\d+(?:\.\d+)?)/);
+        const avvoRatingFromText = avvoRatingMatch ? toNumber(avvoRatingMatch[1]) : null;
+
+        const progressValue = toInt(
+            $('progress.avvo-rating-progress-bar, progress.avvo-rating-progress-bar').first().attr('value')
         );
-        const bioFromHtml = normalizeText(
-            $('[data-testid="bio"], .lawyer-bio, .bio-text, .profile-bio, [itemprop="description"]').first().text()
-        );
-        const bio = pickFirst(bioFromHtml, metaDescription, jsonLdProfile?.bio, embeddedProfile?.bio) || '';
+        const avvoRatingFromProgress = progressValue ? progressValue / 10 : null;
+        const avvoRating = pickFirst(avvoRatingFromText, avvoRatingFromProgress);
 
-        const education = [];
-        $('[data-testid="education"] li, .education-item, .school-item, [class*="education"] li').each((_, el) => {
-            const value = normalizeText($(el).text());
-            if (value) education.push(value);
-        });
-
-        const awards = [];
-        $('[data-testid="awards"] li, .award-item, [class*="award"] li').each((_, el) => {
-            const value = normalizeText($(el).text());
-            if (value) awards.push(value);
-        });
-
-        const emailLink = $('a[href^="mailto:"]').first();
-        const emailHref = emailLink.attr('href') || '';
-        const emailFromHtml = normalizeText(
-            emailHref.replace(/^mailto:/i, '').split('?')[0] || emailLink.text()
-        );
-        const emailFromData = normalizeText(
-            pickAttrValue(
-                $('[data-email], [data-contact-email], [data-testid="email"], .email, .contact-email').first(),
-                ['data-email', 'data-contact-email']
-            ) ||
-            $('[data-email], [data-contact-email], [data-testid="email"], .email, .contact-email')
-                .first()
-                .text()
-        );
-
-        const phoneLink = $('a[href^="tel:"]').first();
-        const phoneHref = phoneLink.attr('href') || '';
-        const phoneFromHtml = normalizeText(
-            phoneHref.replace(/^tel:/i, '').split('?')[0] || phoneLink.text()
-        ) || normalizeText($('[data-testid="phone"], .phone, .contact-phone').first().text());
-        const phoneFromData = normalizeText(
-            pickAttrValue(
-                $('[data-phone], [data-contact-phone], [data-testid="phone"]').first(),
-                ['data-phone', 'data-contact-phone']
-            ) ||
-            $('[data-phone], [data-contact-phone], [data-testid="phone"]').first().text()
-        );
-
-        const locationFromHtml = normalizeText(
-            $('[data-testid="address"], [data-testid="location"], .profile-address, .office-address, address, .address, .location')
-                .first()
-                .text()
-        );
-
-        const ratingFromMeta = toNumber(
-            $('meta[itemprop="ratingValue"], meta[property="ratingValue"], meta[name="rating"]')
-                .first()
-                .attr('content')
-        );
-
-        // Use specific CSS selector for rating from detail page
-        const reviewScoreLink = $('a.review-score').first();
-        const ratingFromReviewScore = toNumber(normalizeText(reviewScoreLink.text()));
-
-        // Also try the Avvo rating badge (e.g., "Rating: 10.0")
-        const avvoRatingBadge = $('span.avvo-rating-count').first();
-        let avvoRatingFromBadge = null;
-        if (avvoRatingBadge.length > 0) {
-            const badgeText = normalizeText(avvoRatingBadge.text());
-            const ratingMatch = badgeText.match(/(\d+\.?\d*)/);
-            if (ratingMatch) {
-                avvoRatingFromBadge = toNumber(ratingMatch[1]);
-            }
-        }
-
-        const ratingFromHtml = ratingFromReviewScore || toNumber(
-            normalizeText(
-                $('[data-testid="rating"], .avvo-rating, .rating-value, [class*="rating"]')
-                    .first()
-                    .text()
-            )
-        );
-
-        const reviewCountFromMeta = toInt(
-            $('meta[itemprop="reviewCount"], meta[itemprop="ratingCount"], meta[name="reviewCount"]')
-                .first()
-                .attr('content')
-        );
-
-        // Use specific CSS selector for review count from detail page
-        const reviewCountSpan = $('span.review-count').first();
-        const reviewCountFromSpan = toInt(normalizeText(reviewCountSpan.text()));
-        const reviewCountFromHtml = reviewCountFromSpan || toInt(
-            normalizeText(
-                $('[data-testid="review-count"], [class*="review-count"], [itemprop="reviewCount"]')
-                    .first()
-                    .text()
-            )
-        );
-
-        const websiteFromHtml = normalizeExternalWebsite(
-            pickAttrValue(
-                $('[data-testid="website"] a, a[data-website], a[data-event-label="Website"], a[aria-label*="Website"], a[href*="website"], [data-website-url], [data-url]')
-                    .first(),
-                ['href', 'data-website-url', 'data-url']
-            ),
-            profileUrl
-        );
-
-        // Use normalizeImage (not normalizeUrl) to filter out Avvo logos
-        const imageFromMeta = normalizeImage(
-            $('meta[property="og:image"], meta[name="twitter:image"], meta[itemprop="image"]').first().attr('content') || '',
-            profileUrl
-        );
-
-        // Use specific CSS selector for profile image from detail page
-        const headshotImg = $('div.headshot img').first();
-        const imageFromHtml = normalizeImage(
-            pickAttrValue(headshotImg, ['src', 'data-src', 'data-lazy-src']) ||
-            pickAttrValue(
-                $('[data-testid="profile-photo"] img, .profile-photo img, .profile-header img, img[alt*="Attorney"], img[alt*="Lawyer"], img[itemprop="image"]')
-                    .first(),
-                ['src', 'data-src', 'data-lazy-src']
-            ),
-            profileUrl
-        );
-
-        // Use specific CSS selector for practice areas from detail page
-        // span.practice-area-list contains comma-separated text like "Divorce & Separation, Family, Child Custody"
-        const practiceAreas = [];
-        const practiceAreaList = $('span.practice-area-list');
-        if (practiceAreaList.length > 0) {
-            const practiceText = normalizeText(practiceAreaList.text());
-            if (practiceText) {
-                // Split by comma and add each practice area
-                practiceText.split(',').forEach((area) => {
-                    const trimmed = normalizeText(area);
-                    if (trimmed && trimmed.length > 1) {
-                        practiceAreas.push(trimmed);
-                    }
-                });
-            }
-        }
-
-        // Fallback: Try detailed practice area section
-        if (practiceAreas.length === 0) {
-            $('div.practice-area-detail strong').each((_, el) => {
-                const value = normalizeText($(el).text());
-                if (value && value.length > 1) practiceAreas.push(value);
-            });
-        }
-
-        // Fallback: Try generic selectors
-        if (practiceAreas.length === 0) {
-            $('[data-testid="practice-areas"], .practice-areas, .specialties')
-                .find('li, span, a')
-                .each((_, el) => {
-                    const value = normalizeText($(el).text());
-                    if (value && value.length > 1) practiceAreas.push(value);
-                });
-        }
-
-        let reviews = [];
-        if (includeReviews) {
-            const jsonLd = extractJsonLdObjects(html);
-            jsonLd.forEach((item) => {
-                const reviewData = normalizeArray(item.review || item.reviews);
-                if (reviewData.length > 0) {
-                    reviews = reviews.concat(reviewData);
-                }
-            });
-        }
+        const reviews = includeReviews ? [] : [];
 
         return {
-            bio,
-            education,
-            awards,
+            ...jsonLdProfile,
+            avvoRating: avvoRating ?? jsonLdProfile.avvoRating,
+            rating: pickFirst(avvoRating, jsonLdProfile.rating),
             reviews,
-            email: pickFirst(jsonLdProfile?.email, embeddedProfile?.email, emailFromData, emailFromHtml),
-            phone: pickFirst(jsonLdProfile?.phone, embeddedProfile?.phone, phoneFromData, phoneFromHtml),
-            location: pickFirst(jsonLdProfile?.location, embeddedProfile?.location, locationFromHtml),
-            rating: pickFirst(jsonLdProfile?.rating, embeddedProfile?.rating, ratingFromMeta, ratingFromHtml),
-            avvoRating: pickFirst(avvoRatingFromBadge, jsonLdProfile?.avvoRating, embeddedProfile?.avvoRating),
-            clientRating: pickFirst(ratingFromReviewScore, jsonLdProfile?.clientRating, embeddedProfile?.clientRating),
-            reviewCount: pickFirst(
-                reviewCountFromHtml,
-                jsonLdProfile?.reviewCount,
-                embeddedProfile?.reviewCount,
-                reviewCountFromMeta
-            ),
-            website: pickFirst(jsonLdProfile?.website, embeddedProfile?.website, websiteFromHtml),
-            image: pickFirst(imageFromHtml, imageFromMeta, jsonLdProfile?.image, embeddedProfile?.image),
-            practiceAreas: practiceAreas.length > 0
-                ? practiceAreas
-                : (jsonLdProfile?.practiceAreas?.length ? jsonLdProfile.practiceAreas : (embeddedProfile?.practiceAreas || [])),
-            licenseYear: extractLicenseYear($, html),
-            coordinates: pickFirst(jsonLdProfile?.coordinates, embeddedProfile?.coordinates),
-            licenseStates: pickFirst(jsonLdProfile?.licenseStates, embeddedProfile?.licenseStates),
-            certifications: pickFirst(jsonLdProfile?.certifications, embeddedProfile?.certifications),
         };
     } catch (error) {
         log.debug(`Failed to fetch profile page ${profileUrl}: ${error.message}`);
@@ -1129,6 +1057,8 @@ async function enrichLawyersWithProfiles(lawyers, options) {
                     clientRating: profileData.clientRating ?? lawyer.clientRating,
                     reviewCount: profileData.reviewCount ?? lawyer.reviewCount,
                     website: profileData.website || lawyer.website,
+                    barAdmissions: profileData.barAdmissions?.length ? profileData.barAdmissions : (lawyer.barAdmissions || []),
+                    languages: profileData.languages?.length ? profileData.languages : (lawyer.languages || []),
                     practiceAreas: profileData.practiceAreas?.length ? profileData.practiceAreas : lawyer.practiceAreas,
                     image: profileData.image || lawyer.image,
                     licenseYear: profileData.licenseYear ?? lawyer.licenseYear,
@@ -1271,20 +1201,21 @@ async function handleLawyers(lawyers, options) {
 try {
     const input = await Actor.getInput() || {};
 
-    const maxLawyers = input.maxLawyers ?? 50;
+    const maxLawyers = input.maxLawyers ?? 20;
     const maxConcurrency = 20; // Increased from 10 for better speed
     const maxProfileConcurrency = 5;
     const maxRequestsPerCrawl = 1000;
+    const maxListingPages = input.maxListingPages ?? 200;
     const minDelayMs = 500; // Increased for better stealth
     const maxDelayMs = 2000; // Increased for more human-like behavior
-    const useApiFirst = true;
-    const useHtmlFallback = true;
+    const useApiFirst = false;
+    const useHtmlFallback = false;
     const includeReviews = true; // Always include reviews
     const includeContactInfo = input.includeContactInfo ?? true;
 
     // Validate startUrl is provided
     if (!input.startUrl?.trim() && (!Array.isArray(input.startUrls) || input.startUrls.length === 0)) {
-        throw new Error('Invalid input: "startUrl" is required.');
+        throw new Error('Invalid input: "startUrl" or "startUrls" is required.');
     }
 
     if (maxLawyers < 0 || maxLawyers > 10000) {
@@ -1317,6 +1248,8 @@ try {
 
     const seenProfileUrls = new Set();
     const discoveredApiUrls = new Set();
+    const seenListingUrls = new Set();
+    let listingPagesEnqueued = 0;
     const requestQueue = await RequestQueue.open();
 
     for (const url of startUrls) {
@@ -1374,40 +1307,7 @@ try {
                 throw new Error('Blocked by anti-bot protection');
             }
 
-            if (request.userData.label === LABELS.API) {
-                try {
-                    const json = await fetchJsonWithRetries(request.url, {
-                        proxyUrl: proxyInfo?.url,
-                        headers: {
-                            ...DEFAULT_HEADERS,
-                            'User-Agent': session.userData.userAgent,
-                        },
-                    });
-                    const lawyers = extractLawyersFromApiJson(json, baseUrl);
-                    if (lawyers.length > 0) {
-                        stats.apiExtractions += lawyers.length;
-                        await handleLawyers(lawyers, {
-                            maxLawyers,
-                            seenProfileUrls,
-                            includeContactInfo: includeContactInfo,
-                            includeReviews: includeReviews,
-                            proxyUrl: proxyInfo?.url,
-                            userAgent: session.userData.userAgent,
-                            maxProfileConcurrency,
-                            stats,
-                        });
-                    }
-                    const nextPageUrl = extractNextPageUrlFromApi(json, baseUrl);
-                    if (nextPageUrl) {
-                        await requestQueue.addRequest({
-                            url: nextPageUrl,
-                            userData: { label: LABELS.API },
-                        });
-                    }
-                } catch (error) {
-                    log.debug(`API request failed (${request.url}): ${error.message}`);
-                }
-            } else if (request.userData.label === LABELS.PROFILE) {
+            if (request.userData.label === LABELS.PROFILE) {
                 const lawyer = {
                     name: '',
                     profileUrl: request.url,
@@ -1421,13 +1321,7 @@ try {
                         includeReviews: includeReviews,
                     });
                     if (enriched && !enriched.blocked) {
-                        profile = {
-                            ...lawyer,
-                            bio: enriched.bio,
-                            education: enriched.education,
-                            awards: enriched.awards,
-                            reviews: enriched.reviews,
-                        };
+                        profile = { ...lawyer, ...enriched };
                     }
                 }
                 await Actor.pushData(profile);
@@ -1435,47 +1329,10 @@ try {
             } else {
                 const lawyers = [];
 
-                if (useApiFirst) {
-                    const apiUrls = extractApiUrlsFromHtml(rawHtml, baseUrl)
-                        .filter((url) => !discoveredApiUrls.has(url));
-                    for (const url of apiUrls) {
-                        discoveredApiUrls.add(url);
-                        await requestQueue.addRequest({
-                            url,
-                            userData: { label: LABELS.API },
-                            forefront: true,
-                        });
-                    }
-                }
-
-                const embeddedJson = extractEmbeddedJson(rawHtml);
-                if (embeddedJson.length > 0) {
-                    const embeddedLawyers = [];
-                    embeddedJson.forEach((payload) => {
-                        embeddedLawyers.push(...extractLawyersFromApiJson(payload, baseUrl));
-                    });
-                    if (embeddedLawyers.length > 0) {
-                        lawyers.push(...embeddedLawyers);
-                        stats.embeddedJsonExtractions += embeddedLawyers.length;
-                    }
-                }
-
-                if (lawyers.length === 0) {
-                    const jsonLdLawyers = extractLawyersFromJsonLd(rawHtml, baseUrl);
-                    if (jsonLdLawyers.length > 0) {
-                        lawyers.push(...jsonLdLawyers);
-                        stats.jsonLdExtractions += jsonLdLawyers.length;
-                    }
-                }
-
-                if (lawyers.length === 0 && useHtmlFallback) {
-                    if (cheerioRoot) {
-                        const htmlLawyers = extractLawyerDataViaHtml(cheerioRoot, baseUrl);
-                        if (htmlLawyers.length > 0) {
-                            lawyers.push(...htmlLawyers);
-                            stats.htmlExtractions += htmlLawyers.length;
-                        }
-                    }
+                const jsonLdLawyers = extractLawyersFromJsonLd(rawHtml, baseUrl);
+                if (jsonLdLawyers.length > 0) {
+                    lawyers.push(...jsonLdLawyers);
+                    stats.jsonLdExtractions += jsonLdLawyers.length;
                 }
 
                 if (lawyers.length === 0 && input.debugHtml) {
@@ -1504,9 +1361,22 @@ try {
                     return;
                 }
 
+                let nextPageUrl = '';
                 if (cheerioRoot) {
-                    const nextPageUrl = extractNextPageUrlFromHtml(cheerioRoot, baseUrl);
-                    if (nextPageUrl) {
+                    nextPageUrl = extractNextPageUrlFromHtml(cheerioRoot, baseUrl);
+                }
+                if (!nextPageUrl) {
+                    nextPageUrl = extractNextPageUrlFromRawHtml(rawHtml, baseUrl);
+                }
+                if (!nextPageUrl && lawyers.length > 0) {
+                    // Fallback when the page has results but no detectable next link.
+                    nextPageUrl = buildNextPageUrlByIncrement(baseUrl);
+                }
+
+                if (nextPageUrl) {
+                    if (listingPagesEnqueued < maxListingPages && !seenListingUrls.has(nextPageUrl)) {
+                        seenListingUrls.add(nextPageUrl);
+                        listingPagesEnqueued += 1;
                         await requestQueue.addRequest({
                             url: nextPageUrl,
                             userData: { label: LABELS.LISTING },
