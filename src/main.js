@@ -273,9 +273,8 @@ function extractFirmNameFromHtml($) {
 
     return best || '';
 }
-*/
 
-// Tight version tied to Avvo
+// Tight version tied to Avvo -- Same results as above
 function extractFirmNameFromHtml($) {
     if (!$) return '';
 
@@ -297,6 +296,33 @@ function extractFirmNameFromHtml($) {
 
     return '';
 }
+*/
+function extractFirmNameFromHtml($, lawyerName = '') {
+    if (!$) return '';
+    const lawyerNorm = normalizeText(lawyerName).toLowerCase();
+
+    // 1) BEST: Firm appears under the "Location" section as a heading
+    const firmFromLocation = normalizeText(
+        $('h3')
+            .filter((_, el) => normalizeText($(el).text()).toLowerCase() === 'location')
+            .first()
+            .nextAll('h4, h3, strong')
+            .first()
+            .text()
+    );
+
+    if (firmFromLocation && firmFromLocation.toLowerCase() !== lawyerNorm) return firmFromLocation;
+
+    // 2) Direct firm links (if present)
+    const firmFromLink = normalizeText(
+        $('a[href*="/law-firms/"], a[href*="law-firms"]').first().text()
+    );
+    if (firmFromLink && firmFromLink.toLowerCase() !== lawyerNorm) return firmFromLink;
+
+    // 3) LAST resort: avoid [class*="firm"] because it matches unrelated elements
+    return '';
+}
+
 
 function extractLicenseYear($, html) {
     // Look for "Licensed for X years" text in HTML
@@ -482,6 +508,10 @@ function normalizeLawyer(raw, baseUrl) {
         raw.organization?.name
       )
     );
+    
+    if (firmName && name && firmName.toLowerCase() === name.toLowerCase()) {
+        firmName = '';
+    }
     
     const address = pickFirst(raw.address, worksFor.address) || {};
 
@@ -1460,14 +1490,16 @@ try {
                 }
 
                 profile.firmName = normalizeText(
-                    extractFirmNameFromHtml(cheerioRoot) ||
+                    extractFirmNameFromHtml(cheerioRoot, profile.name) ||
                     profile.worksFor?.name ||
                     profile.worksForName ||
                     ""
                 );
                 
                 //Temp Debug Field to see how firmName is being handled.
-                log.info(`firmName: "${profile.firmName}" | name: "${profile.name}" | url: ${profile.profileUrl}`);
+                if (profile.firmName && profile.name && profile.firmName.toLowerCase() === profile.name.toLowerCase()) {
+                    log.warning(`firmName == name for ${profile.profileUrl} -> "${profile.firmName}"`);
+                }
                 
                 await Actor.pushData(profile);
                 stats.totalLawyersScraped += 1;
