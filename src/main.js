@@ -296,7 +296,8 @@ function extractFirmNameFromHtml($) {
 
     return '';
 }
-*/
+
+Now returning blanks
 function extractFirmNameFromHtml($, lawyerName = '') {
     if (!$) return '';
     const lawyerNorm = normalizeText(lawyerName).toLowerCase();
@@ -322,7 +323,47 @@ function extractFirmNameFromHtml($, lawyerName = '') {
     // 3) LAST resort: avoid [class*="firm"] because it matches unrelated elements
     return '';
 }
+*/
+function extractFirmNameFromHtml($, lawyerName = '') {
+    if (!$) return '';
 
+    const norm = (s) => normalizeText(s).toLowerCase();
+    const nLawyer = norm(lawyerName);
+
+    // Find the first element that is literally the "Location" header
+    const locationHeader = $('*')
+        .filter((_, el) => norm($(el).text()) === 'location')
+        .first();
+
+    if (locationHeader && locationHeader.length) {
+        // Take the next "heading-ish" line after Location that isn't just the lawyer name
+        const candidate = normalizeText(
+            locationHeader
+                .nextAll('h1,h2,h3,h4,strong,a,div,span,p')
+                .filter((_, el) => {
+                    const t = normalizeText($(el).text());
+                    if (!t) return false;
+                    const nt = t.toLowerCase();
+                    if (nt === 'location') return false;
+                    if (nLawyer && (nt === nLawyer || nt.includes(nLawyer) || nLawyer.includes(nt))) return false;
+                    // avoid picking address lines
+                    if (/\b\d{1,6}\s+\S+/.test(t) && /(st|street|ave|avenue|rd|road|blvd|drive|dr|ln|lane|ct|court|pkwy|parkway)\b/i.test(t)) return false;
+                    // reasonable firm name length
+                    return t.length >= 2 && t.length <= 80;
+                })
+                .first()
+                .text()
+        );
+
+        if (candidate) return candidate;
+    }
+
+    // Fallback: law-firm link if present
+    const linkFirm = normalizeText($('a[href*="/law-firms/"], a[href*="law-firms"]').first().text());
+    if (linkFirm && (!nLawyer || norm(linkFirm) !== nLawyer)) return linkFirm;
+
+    return '';
+}
 
 function extractLicenseYear($, html) {
     // Look for "Licensed for X years" text in HTML
@@ -1493,7 +1534,8 @@ try {
                     extractFirmNameFromHtml(cheerioRoot, profile.name) ||
                     profile.worksFor?.name ||
                     profile.worksForName ||
-                    ""
+                    profile.firmName ||   //keeps anything already there
+                    ''
                 );
                 
                 //Temp Debug Field to see how firmName is being handled.
