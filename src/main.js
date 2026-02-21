@@ -330,35 +330,35 @@ function extractFirmNameFromHtml($, lawyerName = '') {
     const norm = (s) => normalizeText(s).toLowerCase();
     const nLawyer = norm(lawyerName);
 
-    // Find the first element that is literally the "Location" header
-    const locationHeader = $('*')
+    // Find element whose text is exactly "Location"
+    const loc = $('*')
         .filter((_, el) => norm($(el).text()) === 'location')
         .first();
 
-    if (locationHeader && locationHeader.length) {
-        // Take the next "heading-ish" line after Location that isn't just the lawyer name
-        const candidate = normalizeText(
-            locationHeader
-                .nextAll('h1,h2,h3,h4,strong,a,div,span,p')
+    if (loc?.length) {
+        // Look at a handful of following elements and pick the first "firm-looking" line
+        const cand = normalizeText(
+            loc.nextAll('h1,h2,h3,h4,strong,a,div,span,p')
                 .filter((_, el) => {
                     const t = normalizeText($(el).text());
                     if (!t) return false;
                     const nt = t.toLowerCase();
                     if (nt === 'location') return false;
                     if (nLawyer && (nt === nLawyer || nt.includes(nLawyer) || nLawyer.includes(nt))) return false;
-                    // avoid picking address lines
-                    if (/\b\d{1,6}\s+\S+/.test(t) && /(st|street|ave|avenue|rd|road|blvd|drive|dr|ln|lane|ct|court|pkwy|parkway)\b/i.test(t)) return false;
-                    // reasonable firm name length
+
+                    // Skip address-ish lines
+                    if (/\b\d{1,6}\s+\S+/.test(t) && /(st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|ln|lane|ct|court|pkwy|parkway|pl|place|way)\b/i.test(t)) return false;
+
                     return t.length >= 2 && t.length <= 80;
                 })
                 .first()
                 .text()
         );
 
-        if (candidate) return candidate;
+        if (cand) return cand;
     }
 
-    // Fallback: law-firm link if present
+    // Fallback: law-firms link if present
     const linkFirm = normalizeText($('a[href*="/law-firms/"], a[href*="law-firms"]').first().text());
     if (linkFirm && (!nLawyer || norm(linkFirm) !== nLawyer)) return linkFirm;
 
@@ -1191,6 +1191,8 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         const jsonLdProfiles = extractLawyersFromJsonLd(html, profileUrl);
         const jsonLdProfile = pickBestProfile(jsonLdProfiles, profileUrl);
 
+        const firmNameFromHtml = extractFirmNameFromHtml($, jsonLdProfile.name);
+        
         if (!jsonLdProfile) return null;
 
         const avvoRatingText = normalizeText($('.avvo-rating-count').first().text());
@@ -1207,6 +1209,7 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
 
         return {
             ...jsonLdProfile,
+            firmName: normalizeText(pickFirst(firmNameFromHtml, jsonLdProfile.firmName)),
             avvoRating: avvoRating ?? jsonLdProfile.avvoRating,
             rating: pickFirst(avvoRating, jsonLdProfile.rating),
             reviews,
@@ -1246,6 +1249,7 @@ async function enrichLawyersWithProfiles(lawyers, options) {
                     awards: profileData.awards?.length ? profileData.awards : (lawyer.awards || []),
                     reviews: profileData.reviews?.length ? profileData.reviews : (lawyer.reviews || []),
                     email: profileData.email || lawyer.email,
+                    firmName: profileData.firmName || lawyer.firmName,
                     phone: profileData.phone || lawyer.phone,
                     location: profileData.location || lawyer.location,
                     rating: profileData.rating ?? lawyer.rating,
