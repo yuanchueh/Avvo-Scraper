@@ -208,7 +208,7 @@ function extractFirmNameFromHtml($) {
 }
 */
 
-// New GPT Function for extractFirmNameFromHtml
+/* New GPT Function for extractFirmNameFromHtml
 function extractFirmNameFromHtml($) {
     if (!$) return '';
 
@@ -272,6 +272,30 @@ function extractFirmNameFromHtml($) {
     });
 
     return best || '';
+}
+*/
+
+// Tight version tied to Avvo
+function extractFirmNameFromHtml($) {
+    if (!$) return '';
+
+    // Avvo profile pages show firm under: "### Location" then "#### <Firm Name>"
+    // In the raw HTML text, it appears as: "### Location" then "#### MSB Law, LC"
+    const firmFromLocationHeader = normalizeText(
+        $('h3')
+            .filter((_, el) => normalizeText($(el).text()).toLowerCase() === 'location')
+            .first()
+            .nextAll('h4')
+            .first()
+            .text()
+    );
+    if (firmFromLocationHeader) return firmFromLocationHeader;
+
+    // Fallbacks (less reliable)
+    const firmFromLawFirmsLink = normalizeText($('a[href*="/law-firms/"]').first().text());
+    if (firmFromLawFirmsLink) return firmFromLawFirmsLink;
+
+    return '';
 }
 
 function extractLicenseYear($, html) {
@@ -1436,15 +1460,14 @@ try {
                 }
 
                 profile.firmName = normalizeText(
-                    profile.firmName ||
+                    extractFirmNameFromHtml(cheerioRoot) ||
                     profile.worksFor?.name ||
                     profile.worksForName ||
-                    extractFirmNameFromHtml(cheerioRoot) ||
                     ""
                 );
-                if (!profile.firmName) {
-                    log.info(`firmName empty for ${profile.profileUrl}`);
-                }
+                
+                //Temp Debug Field to see how firmName is being handled.
+                log.info(`firmName: "${profile.firmName}" | name: "${profile.name}" | url: ${profile.profileUrl}`);
                 
                 await Actor.pushData(profile);
                 stats.totalLawyersScraped += 1;
