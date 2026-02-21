@@ -187,6 +187,7 @@ function pickFirst(...values) {
     return null;
 }
 
+/*
 function extractFirmNameFromHtml($) {
     if (!$) return '';
 
@@ -205,7 +206,73 @@ function extractFirmNameFromHtml($) {
     }
     return '';
 }
+*/
 
+// New GPT Function for extractFirmNameFromHtml
+function extractFirmNameFromHtml($) {
+    if (!$) return '';
+
+    // 1) Direct "law firm" link patterns (if present)
+    const directCandidates = [
+        $('a[href*="/law-firms/"]').first().text(),
+        $('a[href*="law-firms"]').first().text(),
+        $('[data-testid*="firm"]').first().text(),
+    ];
+
+    for (const c of directCandidates) {
+        const t = normalizeText(c);
+        if (t) return t;
+    }
+
+    // 2) Try to find the firm name in the "Location" section.
+    // Heuristic: find an element that looks like a street address, then grab the nearest heading/title above it.
+    const streetRegex =
+        /\b\d{1,6}\s+[^\n,]+?\s+(St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ct|Court|Ln|Lane|Pkwy|Parkway|Pl|Place|Way)\b/i;
+
+    let addressEl = null;
+
+    // Scan common containers first (faster than scanning everything)
+    const containers = $('section, article, div');
+    containers.each((_, el) => {
+        if (addressEl) return;
+        const txt = normalizeText($(el).text());
+        if (txt && streetRegex.test(txt)) addressEl = $(el);
+    });
+
+    if (addressEl) {
+        // Look for a likely firm-name element within the same container
+        // Often it appears as a heading-like element near the address block.
+        const firmFromHeading = normalizeText(
+            addressEl.find('h1, h2, h3, h4, strong').first().text()
+        );
+        if (firmFromHeading && !/^location$/i.test(firmFromHeading)) return firmFromHeading;
+
+        // Or as the closest prior heading/sibling text before the address appears
+        const firmFromPrev = normalizeText(
+            addressEl
+                .find('*')
+                .filter((_, x) => streetRegex.test(normalizeText($(x).text())))
+                .first()
+                .prevAll('h1, h2, h3, h4, strong, a, div, span')
+                .first()
+                .text()
+        );
+        if (firmFromPrev && !/^location$/i.test(firmFromPrev)) return firmFromPrev;
+    }
+
+    // 3) Last-resort: look for any short "LC/LLC/LLP/PC/PA/PLLC" styled firm name on the page
+    const firmSuffixRegex = /\b(LLC|LLP|L\.L\.C\.|L\.L\.P\.|P\.C\.|PC|P\.A\.|PA|PLLC|LC)\b/i;
+    let best = '';
+
+    $('h1,h2,h3,h4,strong,a,div,span').each((_, el) => {
+        const t = normalizeText($(el).text());
+        if (!t) return;
+        if (t.length < 3 || t.length > 80) return;
+        if (firmSuffixRegex.test(t) && t.length > best.length) best = t;
+    });
+
+    return best || '';
+}
 
 function extractLicenseYear($, html) {
     // Look for "Licensed for X years" text in HTML
