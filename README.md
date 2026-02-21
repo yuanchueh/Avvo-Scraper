@@ -71,6 +71,7 @@ Each lawyer profile contains:
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | String | Attorney full name |
+| 'firmName' | String | Attorney firm name |
 | `avvoRating` | Number | Avvo rating (1-10 scale) |
 | `clientRating` | Number | Client/user rating from reviews |
 | `reviewCount` | Integer | Number of client reviews |
