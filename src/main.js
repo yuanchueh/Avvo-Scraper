@@ -1123,7 +1123,7 @@ async function saveDebugHtml({ html, key, url, extra }) {
 
 function buildSearchUrl(input) {
     // Deprecated - kept for backwards compatibility but no longer used
-    return input.startUrl || 'https://www.avvo.com/bankruptcy-debt-lawyer/al.html';
+    return input.startUrl || 'https://www.avvo.com/personal-injury-lawyer/ks.html';
 }
 
 function buildStartUrls(input) {
@@ -1367,13 +1367,13 @@ try {
                         profile = { ...lawyer, ...enriched };
                     }
                 }
-                
+
                 profile.firmName = normalizeText(
                     profile.firmName ||
                     profile.worksFor?.name ||
                     profile.worksForName ||
-                    '';
-                    //extractFirmNameFromHtml($) || Backup function that can pull firm if not provided above. Not currently tested.
+                    extractFirmNameFromHtml(cheerioRoot) ||
+                    ""
                 );
                 await Actor.pushData(profile);
                 stats.totalLawyersScraped += 1;
