@@ -497,7 +497,7 @@ function normalizeLawyer(raw, baseUrl) {
 
     const worksFor = raw.worksFor && typeof raw.worksFor === 'object' ? raw.worksFor : {};
     // Firm name (law firm / company)
-    const firmName = normalizeText(
+    let firmName = normalizeText(
       pickFirst(
         worksFor.name,
         worksFor.legalName,
@@ -649,7 +649,7 @@ function normalizeLawyer(raw, baseUrl) {
             )
         ),
         email: normalizeText(pickFirst(raw.email, contactEmail, contactInfo.email)),
-        firmName,
+        firmName: firmName,
         website: normalizeExternalWebsite(
             pickFirst(raw.website, raw.websiteUrl, worksFor.url, contactWebsite, externalSameAs),
             baseUrl
