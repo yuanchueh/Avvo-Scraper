@@ -1442,6 +1442,10 @@ try {
                     extractFirmNameFromHtml(cheerioRoot) ||
                     ""
                 );
+                if (!profile.firmName) {
+                    log.info(`firmName empty for ${profile.profileUrl}`);
+                }
+                
                 await Actor.pushData(profile);
                 stats.totalLawyersScraped += 1;
             } else {
