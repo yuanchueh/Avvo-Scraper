@@ -187,6 +187,26 @@ function pickFirst(...values) {
     return null;
 }
 
+function extractFirmNameFromHtml($) {
+    if (!$) return '';
+
+    // Common patterns: a “Firm” row/label, or a link to a law firm page
+    const candidates = [
+        $('[data-testid*="firm"]').first().text(),
+        $('a[href*="/law-firms/"]').first().text(),
+        $('a[href*="/lawfirm/"]').first().text(),
+        $('a[href*="law-firms"]').first().text(),
+        $('.law-firm, .lawfirm, [class*="firm"]').first().text(),
+      ];
+
+    for (const candidate of candidates) {
+        const text = normalizeText(candidate);
+        if (text) return text;
+    }
+    return '';
+}
+
+
 function extractLicenseYear($, html) {
     // Look for "Licensed for X years" text in HTML
     const licenseMatch = html.match(/Licensed for (\d+) years/i);
@@ -359,6 +379,19 @@ function normalizeLawyer(raw, baseUrl) {
     );
 
     const worksFor = raw.worksFor && typeof raw.worksFor === 'object' ? raw.worksFor : {};
+    // Firm name (law firm / company)
+    const firmName = normalizeText(
+      pickFirst(
+        worksFor.name,
+        worksFor.legalName,
+        worksFor.brand?.name,
+        worksFor.parentOrganization?.name,
+        raw.worksForName,          // occasional alternative shapes
+        raw.companyName,
+        raw.organization?.name
+      )
+    );
+    
     const address = pickFirst(raw.address, worksFor.address) || {};
 
     let location = '';
@@ -495,6 +528,7 @@ function normalizeLawyer(raw, baseUrl) {
             )
         ),
         email: normalizeText(pickFirst(raw.email, contactEmail, contactInfo.email)),
+        firmName,
         website: normalizeExternalWebsite(
             pickFirst(raw.website, raw.websiteUrl, worksFor.url, contactWebsite, externalSameAs),
             baseUrl
@@ -1333,6 +1367,14 @@ try {
                         profile = { ...lawyer, ...enriched };
                     }
                 }
+                
+                profile.firmName = normalizeText(
+                    profile.firmName ||
+                    profile.worksFor?.name ||
+                    profile.worksForName ||
+                    '';
+                    //extractFirmNameFromHtml($) || Backup function that can pull firm if not provided above. Not currently tested.
+                
                 await Actor.pushData(profile);
                 stats.totalLawyersScraped += 1;
             } else {
