@@ -1374,7 +1374,7 @@ try {
                     profile.worksForName ||
                     '';
                     //extractFirmNameFromHtml($) || Backup function that can pull firm if not provided above. Not currently tested.
-                
+                );
                 await Actor.pushData(profile);
                 stats.totalLawyersScraped += 1;
             } else {
