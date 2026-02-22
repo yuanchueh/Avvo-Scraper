@@ -187,24 +187,44 @@ function pickFirst(...values) {
     return null;
 }
 
-function extractFirmNameFromHtml($, lawyerName = '') {
-    if (!$) return '';
+function extractFirmNameFromHtml($, html, lawyerName = '') {
+    const norm = (s) => normalizeText(s).toLowerCase();
+    const nLawyer = norm(lawyerName);
 
-    const lawyerNorm = normalizeText(lawyerName).toLowerCase();
+    // 1) Tag-agnostic heading approach: find any H1..H6 that equals "Location"
+    const locHeading = $('h1,h2,h3,h4,h5,h6')
+        .filter((_, el) => norm($(el).text()) === 'location')
+        .first();
 
-    // Find the Location heading, then grab the first H4 under it (firm name)
-    const firm = normalizeText(
-        $('h3')
-            .filter((_, el) => normalizeText($(el).text()).toLowerCase() === 'location')
-            .first()
-            .nextAll('h4')
-            .first()
-            .text()
-    );
+    if (locHeading?.length) {
+        const nextHeadingText = normalizeText(
+            locHeading.nextAll('h1,h2,h3,h4,h5,h6').first().text()
+        );
 
-    if (!firm) return '';
-    if (lawyerNorm && firm.toLowerCase() === lawyerNorm) return '';
-    return firm;
+        if (nextHeadingText) {
+            const n = nextHeadingText.toLowerCase();
+            if (!nLawyer || (n !== nLawyer && !n.includes(nLawyer) && !nLawyer.includes(n))) {
+                return nextHeadingText;
+            }
+        }
+    }
+
+    // 2) HTML regex fallback: look for "Location</hX> ... <hY>FIRM</hY>"
+    // This is very robust against DOM structure changes.
+    if (html) {
+        const m = html.match(
+            /Location<\/h[1-6]>\s*[\s\S]{0,200}?<h[1-6][^>]*>\s*([^<]{2,80}?)\s*<\/h[1-6]>/i
+        );
+        if (m && m[1]) {
+            const firm = normalizeText(m[1]);
+            const n = firm.toLowerCase();
+            if (firm && (!nLawyer || (n !== nLawyer && !n.includes(nLawyer) && !nLawyer.includes(n)))) {
+                return firm;
+            }
+        }
+    }
+
+    return '';
 }
 
 function extractLicenseYear($, html) {
@@ -1035,9 +1055,8 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         
         if (!jsonLdProfile) return null;
         
-        const firmNameFromHtml = extractFirmNameFromHtml($, jsonLdProfile.name);
+        const firmNameFromHtml = extractFirmNameFromHtml($, html, jsonLdProfile.name);
         log.info(`firm debug: "${firmNameFromHtml}" url=${profileUrl}`);
-        
 
         const avvoRatingText = normalizeText($('.avvo-rating-count').first().text());
         const avvoRatingMatch = avvoRatingText.match(/(\d+(?:\.\d+)?)/);
