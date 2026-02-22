@@ -1137,7 +1137,7 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         }
         
         log.info(`fetchLawyerProfile got html length=${html?.length || 0} url=${profileUrl}`);
-        const debugKey = `debug-html/${profileUrl.split('/').pop() || 'profile'}.html`;
+        const debugKey = `debug-html--${(profileUrl.split('/').pop() || 'profile').replace(/[^a-zA-Z0-9!_.'()-]/g, '_')}`;
         await Actor.setValue(debugKey, html, { contentType: 'text/html' });
         log.info(`saved html: ${debugKey} url=${profileUrl}`);
         
