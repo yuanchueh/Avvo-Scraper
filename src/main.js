@@ -197,10 +197,25 @@ function extractFirmNameFromHtml($, html, lawyerName = '') {
         .first();
 
     if (locHeading?.length) {
+        // Use closest() to find the containing section, then search within it
+        const locSection = locHeading.closest('section, div, aside, li');
+        if (locSection.length) {
+            const headingsInSection = locSection.find('h1,h2,h3,h4,h5,h6').filter((_, el) => {
+                return norm($(el).text()) !== 'location';
+            });
+            const nextHeadingText = normalizeText(headingsInSection.first().text());
+            if (nextHeadingText) {
+                const n = nextHeadingText.toLowerCase();
+                if (!nLawyer || (n !== nLawyer && !n.includes(nLawyer) && !nLawyer.includes(n))) {
+                    return nextHeadingText;
+                }
+            }
+        }
+
+        // Also try nextAll siblings as original fallback
         const nextHeadingText = normalizeText(
             locHeading.nextAll('h1,h2,h3,h4,h5,h6').first().text()
         );
-
         if (nextHeadingText) {
             const n = nextHeadingText.toLowerCase();
             if (!nLawyer || (n !== nLawyer && !n.includes(nLawyer) && !nLawyer.includes(n))) {
@@ -210,10 +225,10 @@ function extractFirmNameFromHtml($, html, lawyerName = '') {
     }
 
     // 2) HTML regex fallback: look for "Location</hX> ... <hY>FIRM</hY>"
-    // This is very robust against DOM structure changes.
+    // Expanded window to 2000 chars to handle deeply nested DOM structures.
     if (html) {
         const m = html.match(
-            /Location<\/h[1-6]>\s*[\s\S]{0,200}?<h[1-6][^>]*>\s*([^<]{2,80}?)\s*<\/h[1-6]>/i
+            /Location<\/h[1-6]>\s*[\s\S]{0,2000}?<h[1-6][^>]*>\s*([^<]{2,80}?)\s*<\/h[1-6]>/i
         );
         if (m && m[1]) {
             const firm = normalizeText(m[1]);
@@ -224,7 +239,77 @@ function extractFirmNameFromHtml($, html, lawyerName = '') {
         }
     }
 
+    // 3) Direct: find the firm name as the heading immediately preceding the website link.
+    // On Avvo the location section has an <h4>Firm Name</h4> followed eventually by a website <a>.
+    if ($) {
+        // Find all external website links (non-avvo)
+        $('a[href^="http"]').each((_, el) => {
+            const href = $(el).attr('href') || '';
+            if (href.includes('avvo.com')) return; // skip internal
+            // Walk up to find a heading sibling or ancestor heading
+            const $el = $(el);
+            // Check if there's an h4 anywhere in the same container
+            const container = $el.closest('section, div, li, aside');
+            if (container.length) {
+                const heading = container.find('h4, h3').first();
+                const headingText = normalizeText(heading.text());
+                if (headingText) {
+                    const n = headingText.toLowerCase();
+                    if (!nLawyer || (n !== nLawyer && !n.includes(nLawyer) && !nLawyer.includes(n))) {
+                        return headingText; // exits .each via truthy - but we need a different approach
+                    }
+                }
+            }
+        });
+
+        // Simpler: find heading directly before the website link in the location area
+        const websiteLink = $('a[href^="http"]').filter((_, el) => {
+            const href = $(el).attr('href') || '';
+            return !href.includes('avvo.com') &&
+                   !href.includes('facebook.com') &&
+                   !href.includes('twitter.com') &&
+                   !href.includes('linkedin.com') &&
+                   !href.includes('youtube.com') &&
+                   !href.includes('google.com') &&
+                   !href.includes('maps.');
+        }).first();
+
+        if (websiteLink.length) {
+            // Look for the nearest preceding heading within the same parent container
+            const container = websiteLink.closest('section, li, aside, [class*="location"]');
+            if (container.length) {
+                const heading = container.find('h3, h4, h5').first();
+                const headingText = normalizeText(heading.text());
+                if (headingText) {
+                    const n = headingText.toLowerCase();
+                    if (!nLawyer || (n !== nLawyer && !n.includes(nLawyer) && !nLawyer.includes(n))) {
+                        return headingText;
+                    }
+                }
+            }
+        }
+    }
+
     return '';
+}
+
+function extractWebsiteFromHtml($) {
+    // Find the first external non-social link — this is the attorney's firm website
+    const websiteLink = $('a[href^="http"]').filter((_, el) => {
+        const href = ($( el).attr('href') || '').toLowerCase();
+        return !href.includes('avvo.com') &&
+               !href.includes('facebook.com') &&
+               !href.includes('twitter.com') &&
+               !href.includes('linkedin.com') &&
+               !href.includes('youtube.com') &&
+               !href.includes('google.com') &&
+               !href.includes('maps.') &&
+               !href.includes('sharer') &&
+               !href.includes('tel:') &&
+               !href.includes('mailto:');
+    }).first();
+
+    return normalizeText(websiteLink.attr('href') || '');
 }
 
 function extractLicenseYear($, html) {
@@ -1075,7 +1160,8 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         const effectiveName = jsonLdProfile?.name || nameFromHtml || '';
 
         const firmNameFromHtml = extractFirmNameFromHtml($, html, effectiveName);
-        log.info(`firm debug: "${firmNameFromHtml}" url=${profileUrl}`);
+        const websiteFromHtml = extractWebsiteFromHtml($);
+        log.info(`firm debug: firmName="${firmNameFromHtml}" website="${websiteFromHtml}" url=${profileUrl}`);
 
         // If we have neither JSON-LD nor an HTML-derived name, we can't enrich reliably
         if (!jsonLdProfile && !effectiveName) return null;
@@ -1101,12 +1187,13 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         return {
             ...baseProfile,
             firmName: normalizeText(firmNameFromHtml || baseProfile.firmName || ''),
+            website: normalizeExternalWebsite(websiteFromHtml || baseProfile.website || '', profileUrl),
             avvoRating: avvoRating ?? baseProfile.avvoRating,
             rating: pickFirst(avvoRating, baseProfile.rating),
             reviews,
         };
     } catch (error) {
-        log.debug(`Failed to fetch profile page ${profileUrl}: ${error.message}`);
+        log.warning(`Failed to fetch profile page ${profileUrl}: ${error.message}`);
         return null;
     }
 }
@@ -1418,15 +1505,14 @@ try {
                     scrapedAt: new Date().toISOString(),
                 };
                 let profile = lawyer;
-                if (shouldEnrichProfiles) {
-                    const enriched = await fetchLawyerProfile(request.url, {
-                        proxyUrl: proxyInfo?.url,
-                        userAgent: session.userData.userAgent,
-                        includeReviews: includeReviews,
-                    });
-                    if (enriched && !enriched.blocked) {
-                        profile = { ...lawyer, ...enriched };
-                    }
+                // Always fetch the profile page to extract firmName, website, and other fields.
+                const enriched = await fetchLawyerProfile(request.url, {
+                    proxyUrl: proxyInfo?.url,
+                    userAgent: session.userData.userAgent,
+                    includeReviews: includeReviews,
+                });
+                if (enriched && !enriched.blocked) {
+                    profile = { ...lawyer, ...enriched };
                 }
 
                 profile.firmName = normalizeText(
@@ -1530,3 +1616,5 @@ try {
 } finally {
     await Actor.exit();
 }
+
+
