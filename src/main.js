@@ -1019,6 +1019,7 @@ function extractLawyerFromElement($, $el, baseUrl) {
 }
 
 async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeReviews }) {
+    log.info(`fetchLawyerProfile called url=${profileUrl}`);
     try {
         const response = await gotScraping({
             url: profileUrl,
@@ -1046,9 +1047,21 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         const html = typeof response.body === 'string' ? response.body : response.body.toString('utf-8');
         
         // DEBUG: save one profile HTML so we can inspect what Apify is actually receiving
+        if (html && /captcha|access denied|are you a human|cloudflare/i.test(html)) {
+            log.warning(`BLOCK PAGE detected for ${profileUrl}`);
+        }
+        
+        log.info(`fetchLawyerProfile got html length=${html?.length || 0} url=${profileUrl}`);
         const debugKey = `debug-html/${profileUrl.split('/').pop() || 'profile'}.html`;
         await Actor.setValue(debugKey, html, { contentType: 'text/html' });
         log.info(`saved html: ${debugKey} url=${profileUrl}`);
+        
+        try {
+            // request...
+        } catch (err) {
+            log.warning(`fetchLawyerProfile failed url=${profileUrl} err=${err?.message || err}`);
+            return null;
+        }
         
         if (isBlockedHtml(html)) {
             return { blocked: true };
@@ -1110,7 +1123,10 @@ async function enrichLawyersWithProfiles(lawyers, options) {
                     blockedCount += 1;
                     return lawyer;
                 }
-                if (!profileData) return lawyer;
+                if (!profileData) {
+                    log.info(`profile enrich skipped (no data) url=${lawyer.profileUrl}`);
+                    return lawyer;
+                }
                 return {
                     ...lawyer,
                     bio: profileData.bio || lawyer.bio,
