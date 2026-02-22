@@ -1056,13 +1056,6 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         await Actor.setValue(debugKey, html, { contentType: 'text/html' });
         log.info(`saved html: ${debugKey} url=${profileUrl}`);
         
-        try {
-            // request...
-        } catch (err) {
-            log.warning(`fetchLawyerProfile failed url=${profileUrl} err=${err?.message || err}`);
-            return null;
-        }
-        
         if (isBlockedHtml(html)) {
             return { blocked: true };
         }
@@ -1071,11 +1064,27 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
 
         const jsonLdProfiles = extractLawyersFromJsonLd(html, profileUrl);
         const jsonLdProfile = pickBestProfile(jsonLdProfiles, profileUrl);
-        
-        if (!jsonLdProfile) return null;
-        
-        const firmNameFromHtml = extractFirmNameFromHtml($, html, jsonLdProfile.name);
+
+        // --- Fallback name extraction if JSON-LD is missing ---
+        const nameFromHtml = normalizeText(
+            $('h1').first().text() ||
+            $('meta[property="og:title"]').attr('content') ||
+            $('title').text()
+        ).replace(/\s*\|\s*Avvo.*$/i, '');
+
+        const effectiveName = jsonLdProfile?.name || nameFromHtml || '';
+
+        const firmNameFromHtml = extractFirmNameFromHtml($, html, effectiveName);
         log.info(`firm debug: "${firmNameFromHtml}" url=${profileUrl}`);
+
+        // If we have neither JSON-LD nor an HTML-derived name, we can't enrich reliably
+        if (!jsonLdProfile && !effectiveName) return null;
+
+        // Build a base profile object even without JSON-LD
+        const baseProfile = jsonLdProfile || {
+            name: effectiveName,
+            profileUrl,
+        };
 
         const avvoRatingText = normalizeText($('.avvo-rating-count').first().text());
         const avvoRatingMatch = avvoRatingText.match(/(\d+(?:\.\d+)?)/);
@@ -1090,10 +1099,10 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         const reviews = includeReviews ? [] : [];
 
         return {
-            ...jsonLdProfile,
-            firmName: normalizeText(firmNameFromHtml || jsonLdProfile.firmName || ''),
-            avvoRating: avvoRating ?? jsonLdProfile.avvoRating,
-            rating: pickFirst(avvoRating, jsonLdProfile.rating),
+            ...baseProfile,
+            firmName: normalizeText(firmNameFromHtml || baseProfile.firmName || ''),
+            avvoRating: avvoRating ?? baseProfile.avvoRating,
+            rating: pickFirst(avvoRating, baseProfile.rating),
             reviews,
         };
     } catch (error) {
