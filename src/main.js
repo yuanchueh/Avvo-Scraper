@@ -197,16 +197,9 @@ function extractFirmNameFromHtml($, html, lawyerName = '') {
         .first();
 
     if (locHeading?.length) {
-        // Find the section/div that *contains* the Location heading, then grab the next heading inside it
-	const locSection = locHeading.closest('section, div, aside');
-	if (locSection.length) {
-	    // Find all headings inside the section, skip the "Location" one itself
-	    const headingsInSection = locSection.find('h1,h2,h3,h4,h5,h6').filter((_, el) => {
-		return norm($(el).text()) !== 'location';
-	    });
-	    const nextHeadingText = normalizeText(headingsInSection.first().text());
-	    // ... rest of your logic
-	}
+        const nextHeadingText = normalizeText(
+            locHeading.nextAll('h1,h2,h3,h4,h5,h6').first().text()
+        );
 
         if (nextHeadingText) {
             const n = nextHeadingText.toLowerCase();
@@ -219,7 +212,9 @@ function extractFirmNameFromHtml($, html, lawyerName = '') {
     // 2) HTML regex fallback: look for "Location</hX> ... <hY>FIRM</hY>"
     // This is very robust against DOM structure changes.
     if (html) {
-        const m = html.match(/Location<\/h[1-6]>\s*[\s\S]{0,2000}?<h[1-6][^>]*>\s*([^<]{2,80}?)\s*<\/h[1-6]>/i);
+        const m = html.match(
+            /Location<\/h[1-6]>\s*[\s\S]{0,200}?<h[1-6][^>]*>\s*([^<]{2,80}?)\s*<\/h[1-6]>/i
+        );
         if (m && m[1]) {
             const firm = normalizeText(m[1]);
             const n = firm.toLowerCase();
@@ -1279,15 +1274,16 @@ async function handleLawyers(lawyers, options) {
         const batch = filtered.slice(i, i + BATCH_SIZE);
 
         let processedBatch = batch;
-        if (includeContactInfo || includeReviews) {
-            processedBatch = await enrichLawyersWithProfiles(batch, {
-                maxConcurrency: maxProfileConcurrency,
-                proxyUrl,
-                userAgent,
-                includeReviews,
-            });
-            stats.profileEnrichments += processedBatch.length;
-        }
+        // Always enrich profiles to ensure firmName, domain, and other profile fields are populated.
+        // Previously this was gated on includeContactInfo || includeReviews, which caused firmName
+        // to always be empty when those flags were false.
+        processedBatch = await enrichLawyersWithProfiles(batch, {
+            maxConcurrency: maxProfileConcurrency,
+            proxyUrl,
+            userAgent,
+            includeReviews,
+        });
+        stats.profileEnrichments += processedBatch.length;
 
         // Push batch immediately
         await Actor.pushData(processedBatch);
@@ -1434,7 +1430,7 @@ try {
                 }
 
                 profile.firmName = normalizeText(
-                    extractFirmNameFromHtml(cheerioRoot, profile.name) ||
+                    extractFirmNameFromHtml(cheerioRoot, rawHtml, profile.name) ||
                     profile.worksFor?.name ||
                     profile.worksForName ||
                     profile.firmName ||   //keeps anything already there
@@ -1534,4 +1530,3 @@ try {
 } finally {
     await Actor.exit();
 }
-
