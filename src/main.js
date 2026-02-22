@@ -187,100 +187,13 @@ function pickFirst(...values) {
     return null;
 }
 
-/*
-function extractFirmNameFromHtml($) {
+function extractFirmNameFromHtml($, lawyerName = '') {
     if (!$) return '';
 
-    // Common patterns: a “Firm” row/label, or a link to a law firm page
-    const candidates = [
-        $('[data-testid*="firm"]').first().text(),
-        $('a[href*="/law-firms/"]').first().text(),
-        $('a[href*="/lawfirm/"]').first().text(),
-        $('a[href*="law-firms"]').first().text(),
-        $('.law-firm, .lawfirm, [class*="firm"]').first().text(),
-      ];
+    const lawyerNorm = normalizeText(lawyerName).toLowerCase();
 
-    for (const candidate of candidates) {
-        const text = normalizeText(candidate);
-        if (text) return text;
-    }
-    return '';
-}
-*/
-
-/* New GPT Function for extractFirmNameFromHtml
-function extractFirmNameFromHtml($) {
-    if (!$) return '';
-
-    // 1) Direct "law firm" link patterns (if present)
-    const directCandidates = [
-        $('a[href*="/law-firms/"]').first().text(),
-        $('a[href*="law-firms"]').first().text(),
-        $('[data-testid*="firm"]').first().text(),
-    ];
-
-    for (const c of directCandidates) {
-        const t = normalizeText(c);
-        if (t) return t;
-    }
-
-    // 2) Try to find the firm name in the "Location" section.
-    // Heuristic: find an element that looks like a street address, then grab the nearest heading/title above it.
-    const streetRegex =
-        /\b\d{1,6}\s+[^\n,]+?\s+(St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ct|Court|Ln|Lane|Pkwy|Parkway|Pl|Place|Way)\b/i;
-
-    let addressEl = null;
-
-    // Scan common containers first (faster than scanning everything)
-    const containers = $('section, article, div');
-    containers.each((_, el) => {
-        if (addressEl) return;
-        const txt = normalizeText($(el).text());
-        if (txt && streetRegex.test(txt)) addressEl = $(el);
-    });
-
-    if (addressEl) {
-        // Look for a likely firm-name element within the same container
-        // Often it appears as a heading-like element near the address block.
-        const firmFromHeading = normalizeText(
-            addressEl.find('h1, h2, h3, h4, strong').first().text()
-        );
-        if (firmFromHeading && !/^location$/i.test(firmFromHeading)) return firmFromHeading;
-
-        // Or as the closest prior heading/sibling text before the address appears
-        const firmFromPrev = normalizeText(
-            addressEl
-                .find('*')
-                .filter((_, x) => streetRegex.test(normalizeText($(x).text())))
-                .first()
-                .prevAll('h1, h2, h3, h4, strong, a, div, span')
-                .first()
-                .text()
-        );
-        if (firmFromPrev && !/^location$/i.test(firmFromPrev)) return firmFromPrev;
-    }
-
-    // 3) Last-resort: look for any short "LC/LLC/LLP/PC/PA/PLLC" styled firm name on the page
-    const firmSuffixRegex = /\b(LLC|LLP|L\.L\.C\.|L\.L\.P\.|P\.C\.|PC|P\.A\.|PA|PLLC|LC)\b/i;
-    let best = '';
-
-    $('h1,h2,h3,h4,strong,a,div,span').each((_, el) => {
-        const t = normalizeText($(el).text());
-        if (!t) return;
-        if (t.length < 3 || t.length > 80) return;
-        if (firmSuffixRegex.test(t) && t.length > best.length) best = t;
-    });
-
-    return best || '';
-}
-
-// Tight version tied to Avvo -- Same results as above
-function extractFirmNameFromHtml($) {
-    if (!$) return '';
-
-    // Avvo profile pages show firm under: "### Location" then "#### <Firm Name>"
-    // In the raw HTML text, it appears as: "### Location" then "#### MSB Law, LC"
-    const firmFromLocationHeader = normalizeText(
+    // Find the Location heading, then grab the first H4 under it (firm name)
+    const firm = normalizeText(
         $('h3')
             .filter((_, el) => normalizeText($(el).text()).toLowerCase() === 'location')
             .first()
@@ -288,81 +201,10 @@ function extractFirmNameFromHtml($) {
             .first()
             .text()
     );
-    if (firmFromLocationHeader) return firmFromLocationHeader;
 
-    // Fallbacks (less reliable)
-    const firmFromLawFirmsLink = normalizeText($('a[href*="/law-firms/"]').first().text());
-    if (firmFromLawFirmsLink) return firmFromLawFirmsLink;
-
-    return '';
-}
-
-Now returning blanks
-function extractFirmNameFromHtml($, lawyerName = '') {
-    if (!$) return '';
-    const lawyerNorm = normalizeText(lawyerName).toLowerCase();
-
-    // 1) BEST: Firm appears under the "Location" section as a heading
-    const firmFromLocation = normalizeText(
-        $('h3')
-            .filter((_, el) => normalizeText($(el).text()).toLowerCase() === 'location')
-            .first()
-            .nextAll('h4, h3, strong')
-            .first()
-            .text()
-    );
-
-    if (firmFromLocation && firmFromLocation.toLowerCase() !== lawyerNorm) return firmFromLocation;
-
-    // 2) Direct firm links (if present)
-    const firmFromLink = normalizeText(
-        $('a[href*="/law-firms/"], a[href*="law-firms"]').first().text()
-    );
-    if (firmFromLink && firmFromLink.toLowerCase() !== lawyerNorm) return firmFromLink;
-
-    // 3) LAST resort: avoid [class*="firm"] because it matches unrelated elements
-    return '';
-}
-*/
-function extractFirmNameFromHtml($, lawyerName = '') {
-    if (!$) return '';
-
-    const norm = (s) => normalizeText(s).toLowerCase();
-    const nLawyer = norm(lawyerName);
-
-    // Find element whose text is exactly "Location"
-    const loc = $('*')
-        .filter((_, el) => norm($(el).text()) === 'location')
-        .first();
-
-    if (loc?.length) {
-        // Look at a handful of following elements and pick the first "firm-looking" line
-        const cand = normalizeText(
-            loc.nextAll('h1,h2,h3,h4,strong,a,div,span,p')
-                .filter((_, el) => {
-                    const t = normalizeText($(el).text());
-                    if (!t) return false;
-                    const nt = t.toLowerCase();
-                    if (nt === 'location') return false;
-                    if (nLawyer && (nt === nLawyer || nt.includes(nLawyer) || nLawyer.includes(nt))) return false;
-
-                    // Skip address-ish lines
-                    if (/\b\d{1,6}\s+\S+/.test(t) && /(st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|ln|lane|ct|court|pkwy|parkway|pl|place|way)\b/i.test(t)) return false;
-
-                    return t.length >= 2 && t.length <= 80;
-                })
-                .first()
-                .text()
-        );
-
-        if (cand) return cand;
-    }
-
-    // Fallback: law-firms link if present
-    const linkFirm = normalizeText($('a[href*="/law-firms/"], a[href*="law-firms"]').first().text());
-    if (linkFirm && (!nLawyer || norm(linkFirm) !== nLawyer)) return linkFirm;
-
-    return '';
+    if (!firm) return '';
+    if (lawyerNorm && firm.toLowerCase() === lawyerNorm) return '';
+    return firm;
 }
 
 function extractLicenseYear($, html) {
@@ -1190,10 +1032,12 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
 
         const jsonLdProfiles = extractLawyersFromJsonLd(html, profileUrl);
         const jsonLdProfile = pickBestProfile(jsonLdProfiles, profileUrl);
-
-        const firmNameFromHtml = extractFirmNameFromHtml($, jsonLdProfile.name);
         
         if (!jsonLdProfile) return null;
+        
+        const firmNameFromHtml = extractFirmNameFromHtml($, jsonLdProfile.name);
+        log.info(`firm debug: "${firmNameFromHtml}" url=${profileUrl}`);
+        
 
         const avvoRatingText = normalizeText($('.avvo-rating-count').first().text());
         const avvoRatingMatch = avvoRatingText.match(/(\d+(?:\.\d+)?)/);
@@ -1209,7 +1053,7 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
 
         return {
             ...jsonLdProfile,
-            firmName: normalizeText(pickFirst(firmNameFromHtml, jsonLdProfile.firmName)),
+            firmName: normalizeText(firmNameFromHtml || jsonLdProfile.firmName || ''),
             avvoRating: avvoRating ?? jsonLdProfile.avvoRating,
             rating: pickFirst(avvoRating, jsonLdProfile.rating),
             reviews,
