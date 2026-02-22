@@ -1044,6 +1044,12 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         }
 
         const html = typeof response.body === 'string' ? response.body : response.body.toString('utf-8');
+        
+        // DEBUG: save one profile HTML so we can inspect what Apify is actually receiving
+        const debugKey = `debug-html/${profileUrl.split('/').pop() || 'profile'}.html`;
+        await Actor.setValue(debugKey, html, { contentType: 'text/html' });
+        log.info(`saved html: ${debugKey} url=${profileUrl}`);
+        
         if (isBlockedHtml(html)) {
             return { blocked: true };
         }
