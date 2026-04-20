@@ -106,12 +106,25 @@ function normalizeUrl(value, baseUrl) {
     }
 }
 
+// Domains that are never attorney websites — Avvo internal, surveys, parent company.
+const BLOCKED_WEBSITE_HOSTS = [
+    'avvo.com',
+    'research.net',          // SurveyMonkey/Avvo user satisfaction surveys
+    'internetbrands.com',    // Avvo parent company ToS pages
+    'surveymonkey.com',
+];
+
+function isBlockedWebsiteHost(hostname) {
+    const h = hostname.toLowerCase();
+    return BLOCKED_WEBSITE_HOSTS.some((blocked) => h === blocked || h.endsWith('.' + blocked));
+}
+
 function normalizeExternalWebsite(value, baseUrl) {
     const normalized = normalizeUrl(value, baseUrl);
     if (!normalized) return '';
     try {
         const host = new URL(normalized).hostname.toLowerCase();
-        if (host.includes('avvo.com')) return '';
+        if (isBlockedWebsiteHost(host)) return '';
     } catch {
         return normalized;
     }
@@ -294,11 +307,17 @@ function extractFirmNameFromHtml($, html, lawyerName = '') {
 }
 
 function extractWebsiteFromHtml($) {
-    // Find the first external non-social link — this is the attorney's firm website
+    // Find the first external link that is actually an attorney's website.
+    // Avvo pages contain survey links (research.net), social links, maps, etc.
     const websiteLink = $('a[href^="http"]').filter((_, el) => {
-        const href = ($( el).attr('href') || '').toLowerCase();
-        return !href.includes('avvo.com') &&
-               !href.includes('facebook.com') &&
+        const href = ($(el).attr('href') || '').toLowerCase();
+        try {
+            const host = new URL(href).hostname.toLowerCase();
+            if (isBlockedWebsiteHost(host)) return false;
+        } catch {
+            // If URL parsing fails, fall through to string checks
+        }
+        return !href.includes('facebook.com') &&
                !href.includes('twitter.com') &&
                !href.includes('linkedin.com') &&
                !href.includes('youtube.com') &&
