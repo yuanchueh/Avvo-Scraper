@@ -191,24 +191,45 @@ function extractFirmNameFromHtml($, html, lawyerName = '') {
     const norm = (s) => normalizeText(s).toLowerCase();
     const nLawyer = norm(lawyerName);
 
+    const isNotLawyerName = (text) => {
+        if (!nLawyer) return true;
+        const n = text.toLowerCase();
+        // Exact match → definitely the lawyer, not a firm
+        if (n === nLawyer) return false;
+        // If the text contains the lawyer name but has additional words (e.g.
+        // "Law Offices of James Crabtree"), it's a real firm name — keep it.
+        if (n.includes(nLawyer) && n.length > nLawyer.length + 3) return true;
+        // If the lawyer name fully contains this text, it's probably a truncated name
+        if (nLawyer.includes(n)) return false;
+        return true;
+    };
+
+    // 0) Avvo-specific: the firm name lives in .location-detail h4 or .law-office h4
+    if ($) {
+        const avvoFirm = normalizeText(
+            $('.location-detail h4, .law-office h4, .location-info h4').first().text()
+        );
+        if (avvoFirm && isNotLawyerName(avvoFirm)) {
+            return avvoFirm;
+        }
+    }
+
     // 1) Tag-agnostic heading approach: find any H1..H6 that equals "Location"
     const locHeading = $('h1,h2,h3,h4,h5,h6')
         .filter((_, el) => norm($(el).text()) === 'location')
         .first();
 
     if (locHeading?.length) {
-        // Use closest() to find the containing section, then search within it
-        const locSection = locHeading.closest('section, div, aside, li');
-        if (locSection.length) {
+        // Walk up to the nearest <section> or location-related container (skip tiny wrapper divs)
+        const locSection = locHeading.closest('section, [class*="location-container"], [class*="location"]')
+            || locHeading.closest('aside, li');
+        if (locSection && locSection.length) {
             const headingsInSection = locSection.find('h1,h2,h3,h4,h5,h6').filter((_, el) => {
                 return norm($(el).text()) !== 'location';
             });
             const nextHeadingText = normalizeText(headingsInSection.first().text());
-            if (nextHeadingText) {
-                const n = nextHeadingText.toLowerCase();
-                if (!nLawyer || (n !== nLawyer && !n.includes(nLawyer) && !nLawyer.includes(n))) {
-                    return nextHeadingText;
-                }
+            if (nextHeadingText && isNotLawyerName(nextHeadingText)) {
+                return nextHeadingText;
             }
         }
 
@@ -216,78 +237,57 @@ function extractFirmNameFromHtml($, html, lawyerName = '') {
         const nextHeadingText = normalizeText(
             locHeading.nextAll('h1,h2,h3,h4,h5,h6').first().text()
         );
-        if (nextHeadingText) {
-            const n = nextHeadingText.toLowerCase();
-            if (!nLawyer || (n !== nLawyer && !n.includes(nLawyer) && !nLawyer.includes(n))) {
-                return nextHeadingText;
-            }
+        if (nextHeadingText && isNotLawyerName(nextHeadingText)) {
+            return nextHeadingText;
         }
     }
 
     // 2) HTML regex fallback: look for "Location</hX> ... <hY>FIRM</hY>"
-    // Expanded window to 2000 chars to handle deeply nested DOM structures.
+    // Window set to 5000 chars because Avvo's data-map attribute alone is ~3000 chars.
     if (html) {
         const m = html.match(
-            /Location<\/h[1-6]>\s*[\s\S]{0,2000}?<h[1-6][^>]*>\s*([^<]{2,80}?)\s*<\/h[1-6]>/i
+            /Location<\/h[1-6]>\s*[\s\S]{0,5000}?<h[1-6][^>]*>\s*([^<]{2,80}?)\s*<\/h[1-6]>/i
         );
         if (m && m[1]) {
             const firm = normalizeText(m[1]);
-            const n = firm.toLowerCase();
-            if (firm && (!nLawyer || (n !== nLawyer && !n.includes(nLawyer) && !nLawyer.includes(n)))) {
+            if (firm && isNotLawyerName(firm)) {
                 return firm;
             }
         }
     }
 
-    // 3) Direct: find the firm name as the heading immediately preceding the website link.
-    // On Avvo the location section has an <h4>Firm Name</h4> followed eventually by a website <a>.
+    // 3) Direct: find the firm name as the heading near a website link in the location area.
     if ($) {
-        // Find all external website links (non-avvo)
-        $('a[href^="http"]').each((_, el) => {
-            const href = $(el).attr('href') || '';
-            if (href.includes('avvo.com')) return; // skip internal
-            // Walk up to find a heading sibling or ancestor heading
-            const $el = $(el);
-            // Check if there's an h4 anywhere in the same container
-            const container = $el.closest('section, div, li, aside');
-            if (container.length) {
-                const heading = container.find('h4, h3').first();
-                const headingText = normalizeText(heading.text());
-                if (headingText) {
-                    const n = headingText.toLowerCase();
-                    if (!nLawyer || (n !== nLawyer && !n.includes(nLawyer) && !nLawyer.includes(n))) {
-                        return headingText; // exits .each via truthy - but we need a different approach
-                    }
-                }
-            }
-        });
+        let firmFromLink = '';
 
-        // Simpler: find heading directly before the website link in the location area
+        // Find all external website links (non-avvo, non-social)
         const websiteLink = $('a[href^="http"]').filter((_, el) => {
-            const href = $(el).attr('href') || '';
+            const href = ($(el).attr('href') || '').toLowerCase();
             return !href.includes('avvo.com') &&
                    !href.includes('facebook.com') &&
                    !href.includes('twitter.com') &&
                    !href.includes('linkedin.com') &&
                    !href.includes('youtube.com') &&
                    !href.includes('google.com') &&
-                   !href.includes('maps.');
+                   !href.includes('maps.') &&
+                   !href.includes('sharer') &&
+                   !href.includes('tel:') &&
+                   !href.includes('mailto:');
         }).first();
 
         if (websiteLink.length) {
-            // Look for the nearest preceding heading within the same parent container
-            const container = websiteLink.closest('section, li, aside, [class*="location"]');
+            // Look for the nearest heading within a location-related ancestor
+            const container = websiteLink.closest('section, [class*="location"], [class*="law-office"], li, aside');
             if (container.length) {
                 const heading = container.find('h3, h4, h5').first();
                 const headingText = normalizeText(heading.text());
-                if (headingText) {
-                    const n = headingText.toLowerCase();
-                    if (!nLawyer || (n !== nLawyer && !n.includes(nLawyer) && !nLawyer.includes(n))) {
-                        return headingText;
-                    }
+                if (headingText && isNotLawyerName(headingText)) {
+                    firmFromLink = headingText;
                 }
             }
         }
+
+        if (firmFromLink) return firmFromLink;
     }
 
     return '';
