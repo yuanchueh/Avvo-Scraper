@@ -106,12 +106,21 @@ function normalizeUrl(value, baseUrl) {
     }
 }
 
-// Domains that are never attorney websites — Avvo internal, surveys, parent company.
+// Domains that are never attorney websites — Avvo internal, surveys, social, parent company.
 const BLOCKED_WEBSITE_HOSTS = [
     'avvo.com',
     'research.net',          // SurveyMonkey/Avvo user satisfaction surveys
     'internetbrands.com',    // Avvo parent company ToS pages
     'surveymonkey.com',
+    'facebook.com',
+    'twitter.com',
+    'x.com',
+    'linkedin.com',
+    'youtube.com',
+    'instagram.com',
+    'google.com',
+    'plus.google.com',
+    'nbi-sems.com',          // Legal seminar/CLE ads, not attorney websites
 ];
 
 function isBlockedWebsiteHost(hostname) {
@@ -123,10 +132,13 @@ function normalizeExternalWebsite(value, baseUrl) {
     const normalized = normalizeUrl(value, baseUrl);
     if (!normalized) return '';
     try {
-        const host = new URL(normalized).hostname.toLowerCase();
+        const url = new URL(normalized);
+        const host = url.hostname.toLowerCase();
         if (isBlockedWebsiteHost(host)) return '';
+        // Reject malformed URLs like "http://n/A"
+        if (host.length < 4 || !host.includes('.')) return '';
     } catch {
-        return normalized;
+        return '';
     }
     return normalized;
 }
@@ -569,7 +581,15 @@ function normalizeLawyer(raw, baseUrl) {
     const contactWebsite = contactInfo.website || contactInfo.url || contactInfo.site;
 
     const sameAs = normalizeArray(raw.sameAs);
-    const externalSameAs = sameAs.find((item) => typeof item === 'string' && !item.includes('avvo.com'));
+    const externalSameAs = sameAs.find((item) => {
+        if (typeof item !== 'string') return false;
+        try {
+            const host = new URL(item).hostname.toLowerCase();
+            return !isBlockedWebsiteHost(host);
+        } catch {
+            return false;
+        }
+    });
 
     // Extract coordinates from geo field
     const geo = pickFirst(raw.geo, worksFor.geo) || {};
