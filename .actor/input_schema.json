@@ -22,11 +22,11 @@
         "maxListingPages": {
             "title": "Maximum Listing Pages",
             "type": "integer",
-            "description": "Maximum number of listing pages to crawl (e.g., 10 pages × 5 lawyers/page = 50 total results).",
+            "description": "Maximum number of listing pages to crawl (e.g., 10 pages x 5 lawyers/page = 50 total results).",
             "default": 10,
             "prefill": 10,
             "minimum": 1,
-            "maximum": 200
+            "maximum": 1000
         },
         "includeReviews": {
             "title": "Include Reviews",
