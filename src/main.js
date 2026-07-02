@@ -781,8 +781,18 @@ function extractApiUrlsFromHtml(html, baseUrl) {
     return [...candidates];
 }
 
-// Ordered by specificity - the "showing X - Y of N" form is the most reliable.
+// Ordered by specificity. The first three match Avvo's real 2026 markup
+// (verified from a captured listing page): meta description "FREE detailed
+// reports on 44 Wrongful Death Attorneys in Wyoming", body "There are 44
+// wrongful death lawyers in Wyoming" and "Wyoming Has 44 Wrongful Death
+// Attorneys with 145 Reviews". Anchored so review counts can't match.
 const LISTING_TOTAL_PATTERNS = [
+    // meta description: "reports on 3,157 <Practice Area> Attorneys in <State>"
+    /\breports\s+on\s+([\d,]+)\s+(?:[\w'-]+\s+){0,6}?attorneys\b/i,
+    // body: "There are 3,157 <practice area> lawyers in <State>"
+    /\bthere\s+are\s+([\d,]+)\s+(?:[\w'-]+\s+){0,6}?(?:lawyers?|attorneys?)\b/i,
+    // body: "<State> Has 3,157 <Practice Area> Attorneys"
+    /\bhas\s+([\d,]+)\s+(?:[\w'-]+\s+){0,6}?attorneys\b/i,
     // "Showing 1 - 40 of 3,157" / "showing 1–40 of 3157 results"
     /showing\s+[\d,]+\s*(?:-|–|—|to)\s*[\d,]+\s+of\s+([\d,]+)/i,
     // "1 - 40 of 3,157 results" / "of 3,157 lawyers"
@@ -806,8 +816,11 @@ function parseListingTotal(text) {
 
 function extractListingTotal($) {
     if (!$) return null;
-    // Most specific scope first, whole page text as last resort.
+    // Most specific scope first, whole page text as last resort. The meta
+    // description is Avvo's most stable count source ("reports on N ... Attorneys").
     const scopes = [
+        $('meta[name="description"]').attr('content') || '',
+        $('meta[property="og:description"]').attr('content') || '',
         $('[class*="results-count"], [class*="result-count"], [data-testid*="result"]').first().text(),
         $('h1').first().text(),
         $('body').text(),
