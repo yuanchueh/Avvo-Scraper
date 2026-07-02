@@ -56,8 +56,8 @@ Verify attorney credentials, bar admissions, and professional qualifications for
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `startUrl` | String | Yes | `https://www.avvo.com/bankruptcy-debt-lawyer/al.html` | Direct Avvo directory URL to scrape from |
-| `maxLawyers` | Integer | No | `20` | Maximum lawyer profiles to extract (1-10000) |
-| `maxListingPages` | Integer | No | `10` | Maximum pages to crawl (each page ~5 lawyers) |
+| `maxLawyers` | Integer | No | `0` | Maximum lawyer profiles to extract; `0` = unlimited (crawl the full listing), max `10000` when capped |
+| `maxListingPages` | Integer | No | `0` | Maximum listing pages to crawl; `0` = unlimited (paginate until the listing ends) |
 | `includeReviews` | Boolean | No | `false` | Fetch additional review-related details from profile pages (slower) |
 | `includeContactInfo` | Boolean | No | `false` | Fetch additional contact details from profile pages (email, phone, office address) (slower) |
 | `proxyConfiguration` | Object | No | `{useApifyProxy: true}` | Proxy settings for reliable scraping |
@@ -116,6 +116,34 @@ Each lawyer profile contains:
   "scrapedAt": "2026-02-20T10:30:00.000Z"
 }
 ```
+
+---
+
+## Run Statistics (`RUN_STATS`)
+
+Every run writes a `RUN_STATS` record to its default key-value store — including failed runs — so downstream pipelines can verify listing coverage:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `listingTotal` | Integer or null | Total result count advertised on the first listing page (e.g. "Showing 1 - 40 of 3,157"); `null` when the page does not show one |
+| `reachedListingEnd` | Boolean | `true` only when pagination ended naturally (no next page, or a page yielding no new profiles); `false` when a cap, block, or early abort stopped the crawl |
+| `blockedRatio` | Float | Blocked responses (Cloudflare challenge, 403/429/503) divided by total HTTP requests, as a `0`–`1` value (`0` when no requests were made) |
+| `pagesCrawled` | Integer | Listing pages successfully processed |
+| `uniqueProfiles` | Integer | Unique attorney profile URLs discovered |
+
+Example record:
+
+```json
+{
+  "listingTotal": 3157,
+  "reachedListingEnd": true,
+  "blockedRatio": 0.02,
+  "pagesCrawled": 79,
+  "uniqueProfiles": 3140
+}
+```
+
+Fetch it via API: `GET https://api.apify.com/v2/key-value-stores/{storeId}/records/RUN_STATS`
 
 ---
 
@@ -180,8 +208,8 @@ Quick run with minimal result count:
 
 ### Optimize Collection Size
 
-- Start with `maxLawyers: 20-50` to test quickly
-- Increase for production runs to `100+`
+- Defaults are uncapped (`maxLawyers: 0`, `maxListingPages: 0`) — the crawl runs until the listing ends, for complete coverage
+- Set `maxLawyers: 20-50` to test quickly
 - Typical page contains ~5 lawyers per page
 
 ### Enable Proxies for Reliability

@@ -26,6 +26,22 @@ const LABELS = {
     SITEMAP: 'SITEMAP',
 };
 
+// Run-level coverage counters persisted to the RUN_STATS key-value store record
+// (complete-coverage contract consumed by the downstream pipeline).
+const runStats = {
+    listingTotal: null, // total results advertised on the first listing page (null if not shown)
+    pagesCrawled: 0, // listing pages successfully processed
+    blockedRequests: 0, // Cloudflare/challenge/403/429/503 responses
+    totalRequests: 0, // HTTP request attempts (crawler queue + profile fetches)
+    paginationEndedNaturally: false, // a listing chain ran out of pages (no next page / no new profiles)
+    cappedBeforeEnd: false, // maxLawyers/maxListingPages stopped pagination before the listing ended
+    crawlCompleted: false, // crawler drained its queue (false when maxRequestsPerCrawl truncated the run)
+};
+let listingTotalParsed = false;
+
+// Profile-URL dedup set shared across listing pages (also feeds RUN_STATS.uniqueProfiles).
+const seenProfileUrls = new Set();
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function randomBetween(min, max) {
@@ -379,6 +395,10 @@ function isBlockedHtml(html) {
         snippet.includes('cf-browser-verification') ||
         snippet.includes('Checking your browser') ||
         snippet.includes('Cloudflare');
+}
+
+function isBlockedErrorMessage(message) {
+    return /\b(403|429|503)\b/.test(message) || /blocked/i.test(message);
 }
 
 function extractJsonLdObjects(html) {
@@ -759,6 +779,44 @@ function extractApiUrlsFromHtml(html, baseUrl) {
     }
 
     return [...candidates];
+}
+
+// Ordered by specificity - the "showing X - Y of N" form is the most reliable.
+const LISTING_TOTAL_PATTERNS = [
+    // "Showing 1 - 40 of 3,157" / "showing 1–40 of 3157 results"
+    /showing\s+[\d,]+\s*(?:-|–|—|to)\s*[\d,]+\s+of\s+([\d,]+)/i,
+    // "1 - 40 of 3,157 results" / "of 3,157 lawyers"
+    /\bof\s+([\d,]+)\s+(?:results?|lawyers?|attorneys?)\b/i,
+    // "3,157 results"
+    /\b([\d,]+)\s+results?\b/i,
+];
+
+function parseListingTotal(text) {
+    const normalized = normalizeText(text);
+    if (!normalized) return null;
+    for (const pattern of LISTING_TOTAL_PATTERNS) {
+        const match = normalized.match(pattern);
+        if (match?.[1]) {
+            const total = parseInt(match[1].replace(/,/g, ''), 10);
+            if (Number.isFinite(total) && total > 0) return total;
+        }
+    }
+    return null;
+}
+
+function extractListingTotal($) {
+    if (!$) return null;
+    // Most specific scope first, whole page text as last resort.
+    const scopes = [
+        $('[class*="results-count"], [class*="result-count"], [data-testid*="result"]').first().text(),
+        $('h1').first().text(),
+        $('body').text(),
+    ];
+    for (const scope of scopes) {
+        const total = parseListingTotal(scope);
+        if (total !== null) return total;
+    }
+    return null;
 }
 
 function extractNextPageUrlFromHtml($, baseUrl) {
@@ -1145,6 +1203,7 @@ function extractLawyerFromElement($, $el, baseUrl) {
 async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeReviews }) {
     log.info(`fetchLawyerProfile called url=${profileUrl}`);
     try {
+        runStats.totalRequests += 1;
         const response = await gotScraping({
             url: profileUrl,
             headers: {
@@ -1162,6 +1221,7 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         });
 
         if ([403, 429, 503].includes(response.statusCode)) {
+            runStats.blockedRequests += 1;
             return { blocked: true };
         }
         if (response.statusCode !== 200) {
@@ -1181,6 +1241,7 @@ async function fetchLawyerProfile(profileUrl, { proxyUrl, userAgent, includeRevi
         log.info(`saved html: ${debugKey} url=${profileUrl}`);
         
         if (isBlockedHtml(html)) {
+            runStats.blockedRequests += 1;
             return { blocked: true };
         }
 
@@ -1422,11 +1483,13 @@ async function handleLawyers(lawyers, options) {
 try {
     const input = await Actor.getInput() || {};
 
-    const maxLawyers = input.maxLawyers ?? 20;
+    // 0 (or any falsy value) means unlimited - crawl until the listing ends naturally.
+    const maxLawyers = input.maxLawyers ?? 0;
     const maxConcurrency = 10;
     const maxProfileConcurrency = 10;
     const maxRequestsPerCrawl = 1000;
-    const maxListingPages = input.maxListingPages ?? 200;
+    // 0 (or any falsy value) means unlimited - paginate until there is no next page.
+    const maxListingPages = input.maxListingPages ?? 0;
     const includeReviews = input.includeReviews ?? false;
     const includeContactInfo = input.includeContactInfo ?? false;
     const shouldEnrichProfiles = includeContactInfo || includeReviews;
@@ -1469,7 +1532,6 @@ try {
         timestamp: new Date().toISOString(),
     };
 
-    const seenProfileUrls = new Set();
     const discoveredApiUrls = new Set();
     const seenListingUrls = new Set();
     let listingPagesEnqueued = 0;
@@ -1497,12 +1559,16 @@ try {
         },
         errorHandler: async ({ session }, error) => {
             const message = String(error?.message || '');
+            if (isBlockedErrorMessage(message)) {
+                runStats.blockedRequests += 1;
+            }
             if (/\b(403|429)\b/.test(message) || /blocked/i.test(message)) {
                 session?.markBad?.();
             }
         },
         preNavigationHooks: [
             ({ session, request }, gotOptions) => {
+                runStats.totalRequests += 1;
                 // Set User-Agent once per session (more realistic)
                 if (!session.userData.userAgent) {
                     session.userData.userAgent = USER_AGENTS[randomBetween(0, USER_AGENTS.length - 1)];
@@ -1570,6 +1636,17 @@ try {
                 await Actor.pushData(profile);
                 stats.totalLawyersScraped += 1;
             } else {
+                runStats.pagesCrawled += 1;
+
+                // Parse the advertised total once, from the first listing page only.
+                if (!listingTotalParsed) {
+                    listingTotalParsed = true;
+                    runStats.listingTotal = extractListingTotal(cheerioRoot);
+                    if (runStats.listingTotal !== null) {
+                        log.info(`Listing reports ${runStats.listingTotal} total results.`);
+                    }
+                }
+
                 const lawyers = [];
 
                 const jsonLdLawyers = extractLawyersFromJsonLd(rawHtml, baseUrl);
@@ -1577,6 +1654,12 @@ try {
                     lawyers.push(...jsonLdLawyers);
                     stats.jsonLdExtractions += jsonLdLawyers.length;
                 }
+
+                // Count profiles we have not seen yet (before handleLawyers registers
+                // them in seenProfileUrls) - used to detect the natural end of pagination.
+                const newProfileCount = lawyers
+                    .filter((lawyer) => lawyer.profileUrl && !seenProfileUrls.has(lawyer.profileUrl))
+                    .length;
 
                 if (lawyers.length === 0 && input.debugHtml) {
                     await saveDebugHtml({
@@ -1600,29 +1683,45 @@ try {
                 }
 
                 if (maxLawyers > 0 && stats.totalLawyersScraped >= maxLawyers) {
+                    runStats.cappedBeforeEnd = true;
                     log.info(`Reached maxLawyers limit (${maxLawyers}). Stopping processing.`);
                     return;
                 }
 
-                let nextPageUrl = '';
-                if (cheerioRoot) {
-                    nextPageUrl = extractNextPageUrlFromHtml(cheerioRoot, baseUrl);
-                }
-                if (!nextPageUrl) {
-                    nextPageUrl = extractNextPageUrlFromRawHtml(rawHtml, baseUrl);
-                }
-                if (!nextPageUrl && lawyers.length > 0) {
-                    // Fallback when the page has results but no detectable next link.
-                    nextPageUrl = buildNextPageUrlByIncrement(baseUrl);
-                }
+                if (lawyers.length > 0 && newProfileCount === 0) {
+                    // Every profile on this page was already seen - the listing has started
+                    // repeating itself, which is the natural end of pagination (and guards
+                    // the page-increment fallback against looping forever).
+                    runStats.paginationEndedNaturally = true;
+                    log.info(`Listing page yielded no new profiles, treating as end of listing: ${request.url}`);
+                } else {
+                    let nextPageUrl = '';
+                    let viaIncrement = false;
+                    if (cheerioRoot) {
+                        nextPageUrl = extractNextPageUrlFromHtml(cheerioRoot, baseUrl);
+                    }
+                    if (!nextPageUrl) {
+                        nextPageUrl = extractNextPageUrlFromRawHtml(rawHtml, baseUrl);
+                    }
+                    if (!nextPageUrl && newProfileCount > 0) {
+                        // Fallback when the page has results but no detectable next link.
+                        nextPageUrl = buildNextPageUrlByIncrement(baseUrl);
+                        viaIncrement = true;
+                    }
 
-                if (nextPageUrl) {
-                    if (listingPagesEnqueued < maxListingPages && !seenListingUrls.has(nextPageUrl)) {
+                    if (!nextPageUrl || seenListingUrls.has(nextPageUrl)) {
+                        // No unvisited next page - pagination ended naturally.
+                        runStats.paginationEndedNaturally = true;
+                    } else if (maxListingPages > 0 && listingPagesEnqueued >= maxListingPages) {
+                        // 0 means unlimited; only a positive cap stops pagination here.
+                        runStats.cappedBeforeEnd = true;
+                        log.info(`Reached maxListingPages limit (${maxListingPages}). Stopping pagination.`);
+                    } else {
                         seenListingUrls.add(nextPageUrl);
                         listingPagesEnqueued += 1;
                         await requestQueue.addRequest({
                             url: nextPageUrl,
-                            userData: { label: LABELS.LISTING },
+                            userData: { label: LABELS.LISTING, viaIncrement },
                         });
                     }
                 }
@@ -1633,11 +1732,24 @@ try {
             }
         },
         failedRequestHandler: async ({ request }, error) => {
+            const message = String(error?.message || '');
+            if (isBlockedErrorMessage(message)) {
+                // errorHandler only sees retried attempts; count the final one here.
+                runStats.blockedRequests += 1;
+            }
+            // An increment-guessed page that 404s means we walked past the last real
+            // page - that is the natural end of the listing, not a coverage gap.
+            if (request.userData?.viaIncrement && /\b404\b/.test(message)) {
+                runStats.paginationEndedNaturally = true;
+            }
             log.warning(`Request failed: ${request.url} - ${error.message}`);
         },
     });
 
     await crawler.run();
+
+    // A drained queue means the crawl was not truncated (e.g. by maxRequestsPerCrawl).
+    runStats.crawlCompleted = await requestQueue.isFinished();
 
     await Actor.setValue('statistics', {
         ...stats,
@@ -1653,6 +1765,25 @@ try {
     log.exception(error, 'Actor failed with error');
     throw error;
 } finally {
+    // Persist coverage stats even on failure/abort paths so the downstream
+    // pipeline can always distinguish "listing exhausted" from "stopped early".
+    try {
+        const runStatsRecord = {
+            listingTotal: runStats.listingTotal,
+            reachedListingEnd: runStats.paginationEndedNaturally
+                && !runStats.cappedBeforeEnd
+                && runStats.crawlCompleted,
+            blockedRatio: runStats.totalRequests > 0
+                ? runStats.blockedRequests / runStats.totalRequests
+                : 0,
+            pagesCrawled: runStats.pagesCrawled,
+            uniqueProfiles: seenProfileUrls.size,
+        };
+        await Actor.setValue('RUN_STATS', runStatsRecord);
+        log.info('RUN_STATS persisted', runStatsRecord);
+    } catch (statsError) {
+        log.warning(`Failed to persist RUN_STATS: ${statsError.message}`);
+    }
     await Actor.exit();
 }
 
