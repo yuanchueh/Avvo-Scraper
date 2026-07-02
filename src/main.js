@@ -1644,6 +1644,15 @@ try {
                     runStats.listingTotal = extractListingTotal(cheerioRoot);
                     if (runStats.listingTotal !== null) {
                         log.info(`Listing reports ${runStats.listingTotal} total results.`);
+                    } else {
+                        // Save the page so the count markup can be inspected when the
+                        // parser misses — listingTotal=null keeps cells stuck at partial.
+                        log.warning('listingTotal parse missed; saving LISTING_DEBUG_HTML.');
+                        try {
+                            await Actor.setValue('LISTING_DEBUG_HTML', rawHtml, { contentType: 'text/html' });
+                        } catch (e) {
+                            log.warning(`Could not save LISTING_DEBUG_HTML: ${e.message}`);
+                        }
                     }
                 }
 
