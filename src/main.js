@@ -39,6 +39,10 @@ const runStats = {
 };
 let listingTotalParsed = false;
 
+// True when the run is entered via profileUrls (direct-profile-URL mode): no
+// listing crawl, so RUN_STATS.reachedListingEnd is satisfied by a drained queue.
+let profileUrlModeActive = false;
+
 // Profile-URL dedup set shared across listing pages (also feeds RUN_STATS.uniqueProfiles).
 const seenProfileUrls = new Set();
 
@@ -1511,9 +1515,20 @@ try {
     const useApiFirst = false;
     const useHtmlFallback = false;
 
-    // Validate startUrl is provided
-    if (!input.startUrl?.trim() && (!Array.isArray(input.startUrls) || input.startUrls.length === 0)) {
-        throw new Error('Invalid input: "startUrl" or "startUrls" is required.');
+    // Direct-profile-URL entry mode (domain backfill): when non-empty, each URL is
+    // enqueued straight to the existing PROFILE handler and the listing/startUrl
+    // crawl is skipped entirely.
+    const profileUrls = (Array.isArray(input.profileUrls) ? input.profileUrls : [])
+        .map((item) => (typeof item === 'string' ? item.trim() : (item?.url || '').trim()))
+        .filter((u) => u.startsWith('http'));
+    const profileUrlMode = profileUrls.length > 0;
+    profileUrlModeActive = profileUrlMode;
+
+    // Validate startUrl is provided — unless profileUrls supplies the entry points.
+    if (!profileUrlMode
+        && !input.startUrl?.trim()
+        && (!Array.isArray(input.startUrls) || input.startUrls.length === 0)) {
+        throw new Error('Invalid input: "startUrl", "startUrls", or "profileUrls" is required.');
     }
 
     if (maxLawyers < 0 || maxLawyers > 10000) {
@@ -1523,6 +1538,8 @@ try {
     log.info('Starting Avvo Lawyers Scraper', {
         startUrl: input.startUrl,
         startUrls: input.startUrls?.length || 0,
+        profileUrls: profileUrls.length,
+        profileUrlMode,
         maxLawyers,
         includeContactInfo,
         includeReviews,
@@ -1550,11 +1567,26 @@ try {
     let listingPagesEnqueued = 0;
     const requestQueue = await RequestQueue.open();
 
-    for (const url of startUrls) {
-        await requestQueue.addRequest({
-            url,
-            userData: { label: LABELS.LISTING },
-        });
+    if (profileUrlMode) {
+        // Bypass the listing crawl: enqueue each profile URL straight to the
+        // existing PROFILE handler. Register them in seenProfileUrls so RUN_STATS
+        // uniqueProfiles reflects the profiles processed in this mode.
+        for (const url of profileUrls) {
+            if (seenProfileUrls.has(url)) continue;
+            seenProfileUrls.add(url);
+            await requestQueue.addRequest({
+                url,
+                userData: { label: LABELS.PROFILE },
+            });
+        }
+        log.info(`Profile-URL mode: enqueued ${seenProfileUrls.size} profile URL(s), skipping listing crawl.`);
+    } else {
+        for (const url of startUrls) {
+            await requestQueue.addRequest({
+                url,
+                userData: { label: LABELS.LISTING },
+            });
+        }
     }
 
     const crawler = new CheerioCrawler({
@@ -1792,9 +1824,14 @@ try {
     try {
         const runStatsRecord = {
             listingTotal: runStats.listingTotal,
-            reachedListingEnd: runStats.paginationEndedNaturally
-                && !runStats.cappedBeforeEnd
-                && runStats.crawlCompleted,
+            // Profile-URL mode has no listing to exhaust: a drained queue (all
+            // queued profiles finished) is the end. Listing mode keeps the
+            // pagination-based rule.
+            reachedListingEnd: profileUrlModeActive
+                ? runStats.crawlCompleted
+                : (runStats.paginationEndedNaturally
+                    && !runStats.cappedBeforeEnd
+                    && runStats.crawlCompleted),
             blockedRatio: runStats.totalRequests > 0
                 ? runStats.blockedRequests / runStats.totalRequests
                 : 0,

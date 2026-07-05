@@ -6,9 +6,16 @@
         "startUrl": {
             "title": "Start URL",
             "type": "string",
-            "description": "Direct Avvo lawyer directory URL to scrape from (e.g., https://www.avvo.com/bankruptcy-debt-lawyer/al.html).",
+            "description": "Direct Avvo lawyer directory URL to scrape from (e.g., https://www.avvo.com/bankruptcy-debt-lawyer/al.html). Optional when profileUrls is provided.",
             "editor": "textfield",
             "prefill": "https://www.avvo.com/bankruptcy-debt-lawyer/al.html"
+        },
+        "profileUrls": {
+            "title": "Profile URLs",
+            "type": "array",
+            "description": "Direct Avvo attorney profile URLs to re-mine for firm website (bypasses listing crawl).",
+            "editor": "stringList",
+            "default": []
         },
         "maxLawyers": {
             "title": "Maximum Lawyers",
@@ -54,7 +61,5 @@
             }
         }
     },
-    "required": [
-        "startUrl"
-    ]
+    "required": []
 }
